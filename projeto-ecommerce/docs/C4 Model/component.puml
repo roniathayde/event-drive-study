@@ -1,0 +1,82 @@
+@startuml E-commerce Component Diagram
+!include <C4/C4_Component>
+
+LAYOUT_LANDSCAPE()
+LAYOUT_WITH_LEGEND()
+
+title Component Diagram - E-commerce (Order Service + Outbox + Read Model da Saga)
+
+Person(customer, "Cliente", "Usuário que realiza compras")
+
+Container_Boundary(api, "E-commerce API") {
+    Component(orderController, "Order Controller", "Express.js", "Endpoints HTTP: cria pedido, consulta status (com projeção da saga) e solicita cancelamento")
+    Component(orderService, "Order Service", "TypeScript", "Cria o pedido e grava o evento na outbox na mesma transação; delega a projeção do status ao Saga Service")
+    Component(orderSagaService, "Order Saga Service", "TypeScript", "Read model: deriva o status da saga (RUNNING → COMPLETED / COMPENSATING → FAILED / CANCELLED) e grava os eventos terminais na outbox")
+
+    Component(paymentApprovedConsumer, "Payment Approved Consumer", "TypeScript", "Consome payment.approved.v1")
+    Component(paymentDeclinedConsumer, "Payment Declined Consumer", "TypeScript", "Consome payment.declined.v1")
+    Component(paymentRefundedConsumer, "Payment Refunded Consumer", "TypeScript", "Consome payment.refunded.v1")
+    Component(inventoryReservedConsumer, "Inventory Reserved Consumer", "TypeScript", "Consome inventory.reserved.v1")
+    Component(inventoryOutOfStockConsumer, "Inventory Out Of Stock Consumer", "TypeScript", "Consome inventory.out_of_stock.v1")
+    Component(inventoryReleasedConsumer, "Inventory Released Consumer", "TypeScript", "Consome inventory.released.v1")
+
+    Component(outboxRelay, "Outbox Relay", "TypeScript", "Worker em background: lê outbox pendente (FOR UPDATE SKIP LOCKED) e publica via Event Publisher")
+
+    Component(orderRepo, "Order Repository", "TypeScript", "Acesso a dados de pedidos (aceita o client da transação)")
+    Component(orderSagaRepo, "Order Saga Repository", "TypeScript", "Persiste a projeção da saga (order_saga)")
+    Component(inboxRepo, "Inbox Repository", "TypeScript", "Idempotência: rejeita eventos já processados via inbox")
+    Component(outboxRepo, "Outbox Repository", "TypeScript", "Grava eventos na outbox e lê/marca os pendentes")
+
+    Component(eventPublisher, "Event Publisher", "TypeScript", "Publica CloudEvents no RabbitMQ (usado apenas pelo relay)")
+
+    ComponentDb(database, "PostgreSQL Database", "PostgreSQL 18", "orders, order_saga (projeção), inbox, outbox")
+}
+
+ComponentQueue(rabbitmq, "RabbitMQ", "Message Broker", "Exchanges topic por tipo de evento (CloudEvents)")
+
+System_Ext(paymentSystem, "Payment System", "Publica payment.approved / payment.declined / payment.refunded")
+System_Ext(inventorySystem, "Inventory System", "Publica inventory.reserved / inventory.out_of_stock / inventory.released")
+System_Ext(auditSystem, "Audit System", "Consome todos os eventos do barramento")
+
+Rel(customer, orderController, "Cria / consulta / cancela pedido", "HTTP/REST")
+Rel(orderController, orderService, "Usa")
+
+Rel(orderService, orderRepo, "Usa (na transação)")
+Rel(orderService, orderSagaService, "Inicia e consulta a projeção")
+Rel(orderSagaService, orderSagaRepo, "Usa (na transação)")
+
+Rel(orderService, outboxRepo, "Grava order.created na outbox (mesma transação)")
+Rel(orderSagaService, outboxRepo, "Grava order.completed / failed / cancelled / cancellation.requested na outbox")
+
+Rel(orderRepo, database, "Lê e escreve", "SQL/pg")
+Rel(orderSagaRepo, database, "Lê e escreve", "SQL/pg")
+Rel(outboxRepo, database, "INSERT outbox / SELECT pendentes", "SQL/pg")
+
+Rel(outboxRelay, outboxRepo, "Busca pendentes e marca como publicado")
+Rel(outboxRelay, eventPublisher, "Publica os eventos pendentes")
+Rel(eventPublisher, rabbitmq, "Publica CloudEvents", "AMQP")
+Rel(rabbitmq, auditSystem, "Entrega eventos para auditoria", "AMQP/Consumer")
+
+Rel(paymentSystem, rabbitmq, "Publica eventos de pagamento", "AMQP")
+Rel(inventorySystem, rabbitmq, "Publica eventos de estoque", "AMQP")
+
+Rel(rabbitmq, paymentApprovedConsumer, "Entrega", "AMQP/Consumer")
+Rel(rabbitmq, paymentDeclinedConsumer, "Entrega", "AMQP/Consumer")
+Rel(rabbitmq, paymentRefundedConsumer, "Entrega", "AMQP/Consumer")
+Rel(rabbitmq, inventoryReservedConsumer, "Entrega", "AMQP/Consumer")
+Rel(rabbitmq, inventoryOutOfStockConsumer, "Entrega", "AMQP/Consumer")
+Rel(rabbitmq, inventoryReleasedConsumer, "Entrega", "AMQP/Consumer")
+
+Rel(paymentApprovedConsumer, orderSagaService, "Atualiza projeção (payment APPROVED)")
+Rel(paymentDeclinedConsumer, orderSagaService, "Atualiza projeção (payment DECLINED)")
+Rel(paymentRefundedConsumer, orderSagaService, "Atualiza projeção (payment REFUNDED)")
+Rel(inventoryReservedConsumer, orderSagaService, "Atualiza projeção (inventory RESERVED)")
+Rel(inventoryOutOfStockConsumer, orderSagaService, "Atualiza projeção (inventory OUT_OF_STOCK)")
+Rel(inventoryReleasedConsumer, orderSagaService, "Atualiza projeção (inventory RELEASED)")
+
+Rel(orderSagaService, inboxRepo, "Verifica idempotência por event.id")
+Rel(inboxRepo, database, "INSERT/SELECT inbox", "SQL/pg")
+
+SHOW_LEGEND()
+
+@enduml

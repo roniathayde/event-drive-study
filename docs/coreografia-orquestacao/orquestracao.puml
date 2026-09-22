@@ -1,0 +1,200 @@
+@startuml Orquestracao - Visao Macro
+title Orquestracao - quem fala com quem (modelo hipotetico: ecommerce maestro)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam componentStyle rectangle
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam ArrowColor #E3E3E8
+skinparam ArrowFontColor #E3E3E8
+skinparam component {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam actorBackgroundColor #2A2A2E
+skinparam actorBorderColor #E3E3E8
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+actor Cliente
+component "ecommerce\n(maestro)" as EC
+component "payment" as PAY
+component "inventory" as INV
+
+Cliente --> EC : cria pedido
+EC --> INV : comando: reserve_stock
+INV --> EC : stock_reserved | out_of_stock
+EC --> PAY : comando: charge_payment
+PAY --> EC : payment_approved | declined
+EC --> INV : comando: release_stock
+
+note bottom of EC
+  payment e inventory nao se
+  conhecem mais. Toda decisao
+  passa pelo ecommerce.
+end note
+
+@enduml
+
+
+@startuml Orquestracao - Caminho Feliz
+title Orquestracao - caminho feliz (pedido aprovado)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam sequence {
+  ArrowColor #E3E3E8
+  ArrowFontColor #E3E3E8
+  LifeLineBorderColor #8A8A8F
+  LifeLineBackgroundColor #2A2A2E
+  ParticipantBorderColor #E3E3E8
+  ParticipantBackgroundColor #2A2A2E
+  ParticipantFontColor #E3E3E8
+  ActorBorderColor #E3E3E8
+  ActorBackgroundColor #2A2A2E
+  ActorFontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+actor Cliente
+participant "ecommerce\n(maestro)" as EC
+participant "inventory" as INV
+participant "payment" as PAY
+
+Cliente -> EC : cria pedido
+EC -> INV : comando: reserve_stock
+INV --> EC : stock_reserved
+EC -> PAY : comando: charge_payment
+PAY --> EC : payment_approved
+EC -> EC : passos concluidos: pedido OK (completed)
+
+note over EC
+  o fluxo e sequencial:
+  o ecommerce decide cada passo.
+  A logica do "o que vem depois"
+  esta toda dentro dele.
+end note
+
+@enduml
+
+
+@startuml Orquestracao - Quando um passo falha
+title Orquestracao - quando um passo falha (estoque OK, pagamento recusado)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam sequence {
+  ArrowColor #E3E3E8
+  ArrowFontColor #E3E3E8
+  LifeLineBorderColor #8A8A8F
+  LifeLineBackgroundColor #2A2A2E
+  ParticipantBorderColor #E3E3E8
+  ParticipantBackgroundColor #2A2A2E
+  ParticipantFontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+participant "ecommerce\n(maestro)" as EC
+participant "inventory" as INV
+participant "payment" as PAY
+
+EC -> INV : comando: reserve_stock
+INV --> EC : stock_reserved
+EC -> PAY : comando: charge_payment
+PAY --> EC : payment_declined
+EC -> EC : o passo falhou e o estoque\nja esta reservado: preciso desfazer
+EC -> INV : comando: release_stock
+INV --> EC : stock_released
+EC -> EC : pedido failed
+
+note over EC, INV
+  Esse "desfazer o que ja foi feito
+  quando um passo falha" tem nome: saga.
+  Detalhamos nas proximas aulas.
+end note
+
+@enduml
+
+
+@startuml Comparacao - Ponto Unico de Falha
+title O trade-off de centralizar: ponto unico de falha
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam componentStyle rectangle
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam ArrowColor #E3E3E8
+skinparam ArrowFontColor #E3E3E8
+skinparam component {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam queue {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam package {
+  BackgroundColor #1A1A1D
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+package "Coreografia (hoje)" {
+  component "ecommerce" as EC1
+  queue "RabbitMQ" as RMQ1
+  component "payment" as PAY1
+  component "inventory" as INV1
+  EC1 -down-> RMQ1
+  PAY1 -up-> RMQ1
+  INV1 -up-> RMQ1
+  note bottom of RMQ1
+    ecommerce fora do ar: payment e
+    inventory continuam reagindo a fatos.
+    O fluxo nao para por causa de um servico.
+  end note
+}
+
+package "Orquestracao (ecommerce maestro)" {
+  component "ecommerce\n(maestro)" as EC2 #8B3A3A
+  component "payment" as PAY2
+  component "inventory" as INV2
+  EC2 -down-> INV2 : comandos
+  EC2 -down-> PAY2 : comandos
+  note bottom of EC2
+    ecommerce fora do ar: ninguem
+    coordena. payment e inventory ficam
+    parados esperando comando. Ponto
+    unico de falha.
+  end note
+}
+
+@enduml

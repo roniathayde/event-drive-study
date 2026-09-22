@@ -1,0 +1,13 @@
+node_modules
+dist
+npm-debug.log
+.git
+.gitignore
+README.md
+CLAUDE.md
+docs
+*.http
+ecommerce.db
+.env
+.DS_Store
+

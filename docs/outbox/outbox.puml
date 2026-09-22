@@ -1,0 +1,183 @@
+@startuml Outbox - O Problema (dual-write)
+title Dual-write - banco e broker nao sao atomicos
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam componentStyle rectangle
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam ArrowColor #E3E3E8
+skinparam ArrowFontColor #E3E3E8
+skinparam component {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam database {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam queue {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+component "ecommerce" as EC
+database "Postgres\n(orders, order_saga)" as DB
+queue "RabbitMQ" as RMQ
+
+EC --> DB : 1. grava estado (commit)
+EC --> RMQ : 2. publica evento
+
+note bottom of EC
+  Sem transacao comum entre os dois.
+  Falha entre 1 e 2:
+  - gravou e nao publicou: evento perdido
+  - publicou e nao gravou: evento fantasma
+end note
+
+@enduml
+
+
+@startuml Outbox - A Solucao (fluxo)
+title Outbox - uma escrita so no banco, relay publica depois
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam queue {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam database {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam sequence {
+  ArrowColor #E3E3E8
+  ArrowFontColor #E3E3E8
+  LifeLineBorderColor #8A8A8F
+  LifeLineBackgroundColor #2A2A2E
+  ParticipantBorderColor #E3E3E8
+  ParticipantBackgroundColor #2A2A2E
+  ParticipantFontColor #E3E3E8
+  DatabaseBorderColor #E3E3E8
+  DatabaseBackgroundColor #2A2A2E
+  DatabaseFontColor #E3E3E8
+  QueueBorderColor #E3E3E8
+  QueueBackgroundColor #2A2A2E
+  QueueFontColor #E3E3E8
+  GroupBackgroundColor #2A2A2E
+  GroupBorderColor #8A8A8F
+  GroupFontColor #E3E3E8
+  GroupHeaderFontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+participant "ecommerce\n(request)" as API
+database "Postgres" as DB
+participant "Outbox Relay" as REL
+queue "RabbitMQ" as RMQ
+
+group 1 transacao so
+  API -> DB : INSERT order + saga + outbox
+  API -> DB : COMMIT
+end
+note over API, DB
+  Ou tudo commita junto, ou nada.
+  Acabou o dual-write.
+end note
+
+== background ==
+
+REL -> DB : SELECT pendentes\nFOR UPDATE SKIP LOCKED
+REL -> RMQ : publica evento
+REL -> DB : UPDATE outbox SET published_at
+
+note over REL, RMQ
+  Relay roda em intervalo.
+  Entrega at-least-once:
+  pode repetir, consumidor desduplica (inbox).
+end note
+
+@enduml
+
+
+@startuml Outbox - Relay e Idempotencia
+title Outbox - entrega at-least-once e inbox no consumo
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam queue {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam database {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam sequence {
+  ArrowColor #E3E3E8
+  ArrowFontColor #E3E3E8
+  LifeLineBorderColor #8A8A8F
+  LifeLineBackgroundColor #2A2A2E
+  ParticipantBorderColor #E3E3E8
+  ParticipantBackgroundColor #2A2A2E
+  ParticipantFontColor #E3E3E8
+  DatabaseBorderColor #E3E3E8
+  DatabaseBackgroundColor #2A2A2E
+  DatabaseFontColor #E3E3E8
+  QueueBorderColor #E3E3E8
+  QueueBackgroundColor #2A2A2E
+  QueueFontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+participant "Outbox Relay" as REL
+database "Postgres\n(outbox)" as DB
+queue "RabbitMQ" as RMQ
+participant "Consumidor\n(payment / inventory)" as CON
+database "Postgres\n(inbox)" as IN
+
+REL -> DB : reserva lote (SKIP LOCKED)
+REL -> RMQ : publica evento [event_id]
+RMQ -> CON : entrega evento
+CON -> IN : INSERT event_id\nON CONFLICT DO NOTHING
+alt event_id novo
+  CON -> CON : processa o evento
+else event_id ja visto
+  CON -> CON : ignora (duplicata)
+end
+
+note over REL, DB
+  Se cair apos publicar e antes de
+  marcar published_at, republica.
+  Por isso o consumo precisa ser idempotente.
+end note
+
+@enduml

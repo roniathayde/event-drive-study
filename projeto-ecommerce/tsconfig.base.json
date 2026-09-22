@@ -1,0 +1,69 @@
+{
+  "compilerOptions": {
+    // Language and Environment
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    
+    // Type Checking
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    
+    // Modules
+    "paths": {
+      "@shared/*": ["./packages/shared/src/*"],
+      "@monolith/*": ["./packages/monolith/src/*"],
+      "@order-service/*": ["./packages/order-service/src/*"],
+      "@payment-service/*": ["./packages/payment-service/src/*"],
+      "@inventory-service/*": ["./packages/inventory-service/src/*"],
+      "@notification-service/*": ["./packages/notification-service/src/*"]
+    },
+
+    // Emit
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": false,
+    "importHelpers": true,
+    "newLine": "lf",
+    
+    // JavaScript Support
+    "allowJs": false,
+    "checkJs": false,
+    
+    // Editor Support
+    "disableSizeLimit": true,
+    
+    // Interop Constraints
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    
+    // Output Formatting
+    "pretty": true,
+    
+    // Completeness
+    "skipLibCheck": true
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    "**/*.spec.ts",
+    "**/*.test.ts"
+  ]
+}

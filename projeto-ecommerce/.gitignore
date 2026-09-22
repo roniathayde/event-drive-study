@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.db
+*.sqlite
+*.sqlite3
+
+# K6 Load Test Reports
+k6/*.html

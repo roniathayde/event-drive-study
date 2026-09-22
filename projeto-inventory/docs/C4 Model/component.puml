@@ -1,0 +1,64 @@
+@startuml Inventory Component Diagram
+!include <C4/C4_Component>
+
+LAYOUT_LANDSCAPE()
+LAYOUT_WITH_LEGEND()
+
+title Component Diagram - Inventory Service (Reserva + Compensação)
+
+System_Ext(ecommerceSystem, "E-commerce System", "Publica order.created e order.cancellation.requested")
+System_Ext(paymentSystem, "Payment System", "Publica payment.declined")
+System_Ext(auditSystem, "Audit System", "Consome eventos do barramento")
+
+ComponentQueue(orderCreatedExchange, "order.created Exchange", "RabbitMQ topic", "com.fake-ecommerce.order.created.v1")
+ComponentQueue(paymentDeclinedExchange, "payment.declined Exchange", "RabbitMQ topic", "com.fake-ecommerce.payment.declined.v1")
+ComponentQueue(cancellationExchange, "order.cancellation.requested Exchange", "RabbitMQ topic", "com.fake-ecommerce.order.cancellation.requested.v1")
+
+ComponentQueue(reserveStockQueue, "inventory.reserve_stock", "RabbitMQ queue (durable)", "Reserva: ligada a order.created")
+ComponentQueue(releaseStockQueue, "inventory.release_stock", "RabbitMQ queue (durable)", "Devolução: ligada a payment.declined + order.cancellation.requested")
+
+ComponentQueue(dlx, "inventory.dlx", "RabbitMQ topic (DLX)", "Dead-letter exchange")
+ComponentQueue(reserveDlq, "inventory.reserve_stock.dlq", "RabbitMQ queue (durable)", "Falhas de reserva")
+ComponentQueue(releaseDlq, "inventory.release_stock.dlq", "RabbitMQ queue (durable)", "Falhas de devolução")
+
+ComponentQueue(inventoryReservedExchange, "inventory.reserved Exchange", "RabbitMQ topic", "com.fake-ecommerce.inventory.reserved.v1")
+ComponentQueue(inventoryOutOfStockExchange, "inventory.out_of_stock Exchange", "RabbitMQ topic", "com.fake-ecommerce.inventory.out_of_stock.v1")
+ComponentQueue(inventoryReleasedExchange, "inventory.released Exchange", "RabbitMQ topic", "com.fake-ecommerce.inventory.released.v1")
+
+Container_Boundary(inventory, "Inventory Service") {
+    Component(consumer, "Consumer", "Node.js / amqplib", "Consome reserve_stock e release_stock, faz ack/nack e encaminha ao service")
+    Component(service, "Inventory Service", "Node.js", "reserveStock: reserva atômica e publica resultado. releaseStock: devolve as reservas do pedido e publica inventory.released")
+    Component(inbox, "Inbox", "Node.js / SQLite", "Idempotência: rejeita eventos já processados via INSERT OR IGNORE")
+    ComponentDb(database, "Inventory DB", "SQLite / better-sqlite3", "inventory (product_name, quantity)\nreservations (order_id, product_name, quantity, status)\ninbox (event_id PK)")
+}
+
+Rel(ecommerceSystem, orderCreatedExchange, "Publica", "AMQP")
+Rel(paymentSystem, paymentDeclinedExchange, "Publica", "AMQP")
+Rel(ecommerceSystem, cancellationExchange, "Publica", "AMQP")
+
+Rel(orderCreatedExchange, reserveStockQueue, "Roteia (#)", "AMQP binding")
+Rel(paymentDeclinedExchange, releaseStockQueue, "Roteia (#)", "AMQP binding")
+Rel(cancellationExchange, releaseStockQueue, "Roteia (#)", "AMQP binding")
+
+Rel(reserveStockQueue, consumer, "Entrega (prefetch=1)", "AMQP")
+Rel(releaseStockQueue, consumer, "Entrega (prefetch=1)", "AMQP")
+
+Rel(consumer, service, "reserveStock(event) / releaseStock(event)")
+Rel(service, inbox, "BEGIN IMMEDIATE → registerInboxEvent", "SQLite tx")
+Rel(inbox, database, "INSERT OR IGNORE INTO inbox", "SQL")
+Rel(service, database, "Reserva: UPDATE quantity - ? + INSERT reservations\nDevolução: UPDATE quantity + ? + reservations='released'", "SQLite tx")
+
+Rel(service, inventoryReservedExchange, "Publica (estoque ok)", "AMQP")
+Rel(service, inventoryOutOfStockExchange, "Publica (sem estoque)", "AMQP")
+Rel(service, inventoryReleasedExchange, "Publica (estoque devolvido)", "AMQP")
+
+Rel(consumer, dlx, "nack → encaminha falha", "AMQP")
+Rel(dlx, reserveDlq, "Roteia (reserve_stock)", "AMQP binding")
+Rel(dlx, releaseDlq, "Roteia (release_stock)", "AMQP binding")
+
+Rel(inventoryReservedExchange, auditSystem, "Entrega", "AMQP")
+Rel(inventoryOutOfStockExchange, auditSystem, "Entrega", "AMQP")
+Rel(inventoryReleasedExchange, auditSystem, "Entrega", "AMQP")
+
+SHOW_LEGEND()
+@enduml

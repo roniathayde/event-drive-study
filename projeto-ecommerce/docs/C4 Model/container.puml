@@ -1,0 +1,41 @@
+@startuml E-commerce Container Diagram
+!include <C4/C4_Container>
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LANDSCAPE()
+
+title Container Diagram - E-commerce Service (Outbox Pattern)
+
+Person(customer, "Cliente", "Usuário que realiza compras")
+
+System_Boundary(ecommerce, "E-commerce Service (Order)") {
+    Container(spa, "Web App", "HTML/CSS/JS, servido pelo Express", "Lista, cria e cancela pedidos e acompanha o status da saga")
+    Container(api, "API Application", "Node.js, Express, TypeScript", "Recebe HTTP, cria pedidos e grava estado + evento na outbox na MESMA transação; projeta o status da saga e consome eventos de payment/inventory")
+    Container(relay, "Outbox Relay", "Node.js, TypeScript", "Worker em background (mesmo processo da API): lê a outbox pendente com FOR UPDATE SKIP LOCKED e publica os eventos no broker")
+    ContainerDb(database, "E-commerce DB", "PostgreSQL 18", "orders, order_saga, inbox, outbox")
+}
+
+ContainerQueue_Ext(rabbitmq, "Event Broker", "RabbitMQ", "Exchanges topic por tipo de evento (CloudEvents)")
+
+System_Ext(paymentSystem, "Payment System", "Publica payment.approved / declined / refunded")
+System_Ext(inventorySystem, "Inventory System", "Publica inventory.reserved / out_of_stock / released")
+System_Ext(auditSystem, "Audit System", "Consome todos os eventos do barramento")
+
+Rel(customer, spa, "Usa no navegador", "HTTPS")
+Rel(spa, api, "Cria, consulta e cancela pedidos", "JSON/HTTP")
+
+Rel(api, database, "Grava pedido + saga + evento na outbox (1 transação); lê o read model", "SQL/pg")
+Rel(relay, database, "Lê outbox pendente (SKIP LOCKED) e marca como publicado", "SQL/pg")
+Rel(relay, rabbitmq, "Publica os eventos de domínio (CloudEvents)", "AMQP")
+
+Rel(paymentSystem, rabbitmq, "Publica eventos de pagamento", "AMQP")
+Rel(inventorySystem, rabbitmq, "Publica eventos de estoque", "AMQP")
+Rel(rabbitmq, api, "Entrega eventos de payment/inventory aos consumidores", "AMQP/Consumer")
+Rel(rabbitmq, auditSystem, "Entrega todos os eventos", "AMQP/Consumer")
+
+Lay_R(paymentSystem, inventorySystem)
+Lay_R(inventorySystem, auditSystem)
+
+SHOW_LEGEND()
+
+@enduml

@@ -1,0 +1,246 @@
+@startuml dlq-basic-flow
+title <&pulse>  **DLQ no RabbitMQ** — ciclo de vida da mensagem
+
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam defaultFontName "Helvetica"
+skinparam defaultTextAlignment center
+skinparam ArrowFontSize 11
+skinparam ArrowThickness 1.2
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor    #D4A017
+
+skinparam actor {
+  BackgroundColor #ECEFF1
+  BorderColor     #455A64
+}
+
+skinparam rectangle {
+  BackgroundColor<<exchange>> #BBDEFB
+  BorderColor<<exchange>>     #1565C0
+  FontColor<<exchange>>       #0D47A1
+  BackgroundColor<<dlx>>      #FFCC80
+  BorderColor<<dlx>>          #E65100
+  FontColor<<dlx>>            #BF360C
+}
+
+skinparam queue {
+  BackgroundColor<<main>>  #C8E6C9
+  BorderColor<<main>>      #2E7D32
+  FontColor<<main>>        #1B5E20
+  BackgroundColor<<dlq>>   #FFCC80
+  BorderColor<<dlq>>       #E65100
+  FontColor<<dlq>>         #BF360C
+}
+
+skinparam component {
+  BackgroundColor #ECEFF1
+  BorderColor     #37474F
+}
+
+actor "<&account-login>\n**Producer**" as P
+
+rectangle "<&random>\n**order.created**\n//topic exchange//" <<exchange>> as EX
+
+queue "<&inbox>\n**inventory.reserve_stock**" <<main>> as Q
+
+component "<&cog>\n**Consumer**\n//inventory//" as C
+
+rectangle "<&warning>  <&random>\n**inventory.dlx**\n//topic exchange//" <<dlx>> as DLX
+
+queue "<&warning>  <&inbox>\n**reserve_stock.dlq**\n//binding key: reserve_stock//" <<dlq>> as DLQ
+
+actor "<&wrench>\n**Operador**\n//replay job//" as OP
+
+P  -[#2E7D32,thickness=2]->  EX : <&envelope-closed>  publish\nrk = com.fake-ecommerce.order.created.v1
+EX -[#2E7D32,thickness=2]->  Q  : route
+Q  -[#2E7D32,thickness=2]->  C  : deliver
+
+C  -[#2E7D32,thickness=2]-> Q   : <&check>  **ack** (sucesso)\n//mensagem removida//
+C  -[#E65100,thickness=2]-> DLX : <&x>  **nack(requeue=false)**\n//broker reescreve rk → reserve_stock//
+DLX -[#E65100,thickness=2]-> DLQ : match rk
+DLQ -[#455A64,dashed,thickness=2]-> OP : inspect / replay
+
+note right of Q
+  <b><&cog> arguments</b>
+  x-dead-letter-exchange       = inventory.dlx
+  x-dead-letter-routing-key  = **reserve_stock**
+end note
+
+note bottom of DLX
+  <b><&warning> Dead-letter dispara quando:</b>
+  • nack / reject com requeue = false
+  • TTL da mensagem expira
+  • fila atinge x-max-length
+
+  RabbitMQ adiciona header <b>x-death</b>
+  (motivo, count, fila origem, timestamp)
+end note
+
+legend bottom right
+  | <#C8E6C9> | happy path |
+  | <#FFCC80> | dead-letter path |
+endlegend
+
+@enduml
+
+
+@startuml dlq-without-routing-key
+title <&warning>  **Sem** x-dead-letter-routing-key — todas as falhas caem numa só DLQ
+
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam defaultFontName "Helvetica"
+skinparam ArrowFontSize 11
+
+skinparam queue {
+  BackgroundColor<<main>> #C8E6C9
+  BorderColor<<main>>     #2E7D32
+  BackgroundColor<<bad>>  #FFCDD2
+  BorderColor<<bad>>      #C62828
+  FontColor<<bad>>        #B71C1C
+}
+skinparam rectangle {
+  BackgroundColor<<dlx>>  #FFCC80
+  BorderColor<<dlx>>      #E65100
+}
+
+queue "<&inbox>\n**reserve_stock**"  <<main>> as Q1
+queue "<&inbox>\n**release_stock**"  <<main>> as Q2
+queue "<&inbox>\n**rebalance**"      <<main>> as Q3
+
+rectangle "<&warning>  <&random>\n**inventory.dlx**" <<dlx>> as DLX
+
+queue "<&warning>  <&inbox>\n**inventory.dlq**\n//binding = #//" <<bad>> as DLQ
+
+Q1 -[#E65100]-> DLX : rk **preservada**\n(com.fake-ecommerce…)
+Q2 -[#E65100]-> DLX : rk **preservada**
+Q3 -[#E65100]-> DLX : rk **preservada**
+
+DLX -[#C62828,bold]-> DLQ : binding **#** captura tudo
+
+note right of DLQ
+  <b><&x> Problema</b>
+  • impossível saber a fila origem
+    sem ler header x-death
+  • replay manual confuso
+  • monitor não diferencia origem
+  • virou "lixão" de erros
+end note
+
+@enduml
+
+
+@startuml dlx-pattern-service
+title <&check>  **Padrão de mercado** — 1 DLX por serviço, N DLQs separadas por routing key
+
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam defaultFontName "Helvetica"
+skinparam ArrowFontSize 11
+
+skinparam package {
+  BackgroundColor #FAFAFA
+  BorderColor     #FF6600
+  FontColor       #BF360C
+  FontStyle       bold
+}
+skinparam queue {
+  BackgroundColor<<main>> #C8E6C9
+  BorderColor<<main>>     #2E7D32
+  BackgroundColor<<dlq>>  #FFCC80
+  BorderColor<<dlq>>      #E65100
+}
+skinparam rectangle {
+  BackgroundColor<<dlx>>  #FFCC80
+  BorderColor<<dlx>>      #E65100
+  FontColor<<dlx>>        #BF360C
+}
+
+package "<&shield>  inventory service  //bounded context//" {
+
+  queue "<&inbox>  **reserve_stock**\n//x-dlrk = reserve_stock//" <<main>> as Q1
+  queue "<&inbox>  **release_stock**\n//x-dlrk = release_stock//" <<main>> as Q2
+  queue "<&inbox>  **rebalance**\n//x-dlrk = rebalance//"         <<main>> as Q3
+
+  rectangle "<&warning>  <&random>\n**inventory.dlx**" <<dlx>> as DLX
+
+  queue "<&inbox>  reserve_stock.dlq\n//bind: reserve_stock//" <<dlq>> as DLQ1
+  queue "<&inbox>  release_stock.dlq\n//bind: release_stock//" <<dlq>> as DLQ2
+  queue "<&inbox>  rebalance.dlq\n//bind: rebalance//"         <<dlq>> as DLQ3
+
+  Q1 -[#E65100]-> DLX
+  Q2 -[#E65100]-> DLX
+  Q3 -[#E65100]-> DLX
+
+  DLX -[#E65100]-> DLQ1
+  DLX -[#E65100]-> DLQ2
+  DLX -[#E65100]-> DLQ3
+}
+
+note right of DLX
+  <b><&check> Vantagens</b>
+  • 1 DLX por serviço (bounded context)
+  • cada fila reescreve a rk
+    via x-dead-letter-routing-key
+  • cada DLQ bindada pela sua rk
+  → isolamento + monitor por origem
+end note
+
+@enduml
+
+
+@startuml dlx-antipattern
+title <&x>  **Anti-padrão** — DLX global atravessando bounded contexts
+
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam defaultFontName "Helvetica"
+
+skinparam package {
+  BackgroundColor #FAFAFA
+  BorderColor     #757575
+}
+skinparam queue {
+  BackgroundColor #C8E6C9
+  BorderColor     #2E7D32
+}
+skinparam rectangle {
+  BackgroundColor<<bad>> #FFCDD2
+  BorderColor<<bad>>     #C62828
+  FontColor<<bad>>       #B71C1C
+}
+skinparam queue {
+  BackgroundColor<<bad>> #FFCDD2
+  BorderColor<<bad>>     #C62828
+  FontColor<<bad>>       #B71C1C
+}
+
+package "<&shield> inventory" {
+  queue "<&inbox> reserve_stock" as Q_INV
+}
+package "<&shield> payment" {
+  queue "<&inbox> charge" as Q_PAY
+}
+package "<&shield> auditoria" {
+  queue "<&inbox> log_all" as Q_AUD
+}
+
+rectangle "<&warning>  <&random>\n**platform.dlx**\n//global//" <<bad>> as GDLX
+queue "<&warning>  <&inbox>\n**global.dlq**" <<bad>> as GDLQ
+
+Q_INV -[#C62828]-> GDLX
+Q_PAY -[#C62828]-> GDLX
+Q_AUD -[#C62828]-> GDLX
+GDLX  -[#C62828]-> GDLQ
+
+note bottom of GDLX
+  <b><&x> Problemas</b>
+  • quebra bounded context
+  • dono da DLQ fica ambíguo
+  • mistura SLAs e permissões
+  • troubleshooting confuso
+  • acoplamento operacional entre times
+end note
+
+@enduml

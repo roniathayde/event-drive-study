@@ -1,0 +1,72 @@
+@startuml Payment System Component Diagram
+!include <C4/C4_Component>
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title Component Diagram - Payment System (Event-Driven + Compensação da Saga)
+
+Container_Boundary(payment_service, "Payment System") {
+    Component(orderCreatedConsumer, "Order Created Consumer", "TypeScript", "Consome order.created.v1, cria a requisição via PaymentService e publica payment.requested.v1")
+
+    Component(paymentProcessedConsumer, "Payment Processed Consumer", "TypeScript", "Consome payment.processed.v1, atualiza o status e publica payment.approved/declined. Se houver intenção de estorno pendente, estorna na hora (tryRefundOnApproval) e publica payment.refunded")
+
+    Component(inventoryOutOfStockConsumer, "Inventory Out Of Stock Consumer", "TypeScript", "Consome inventory.out_of_stock.v1 → requestVoid. Estorna se já aprovado, senão grava a intenção")
+    Component(orderCancellationRequestedConsumer, "Order Cancellation Requested Consumer", "TypeScript", "Consome order.cancellation.requested.v1 → requestVoid (estorna ou grava intenção)")
+
+    Component(paymentService, "Payment Service", "TypeScript", "Lógica de negócio: processa pagamento, atualiza status e executa o estorno (void_intent / refund)")
+
+    Component(repository, "Payment Repository", "TypeScript", "Persistência via external_id; gerencia void_intents e marca estornos")
+
+    ComponentDb(database, "SQLite Database", "SQLite", "payment_requests, payment_transactions, void_intents")
+}
+
+Container_Boundary(gateway_context, "Payment Gateway Context") {
+    Component(paymentRequestedCreditConsumer, "Payment Requested Credit Consumer", "TypeScript", "Consome payment.requested.v1 (routing key: credit), simula e publica payment.processed.v1")
+    System_Ext(creditGateway, "Credit Gateway (Fake)", "Simulação de gateway de crédito (~2s)")
+    Component(paymentRequestedDebitConsumer, "Payment Requested Debit Consumer", "TypeScript", "Consome payment.requested.v1 (routing key: debit), simula e publica payment.processed.v1")
+    System_Ext(debitGateway, "Debit Gateway (Fake)", "Simulação de gateway de débito (~1.5s)")
+}
+
+ComponentQueue(rabbitmq_in, "RabbitMQ", "Message Broker", "Entrada: order.created.v1, inventory.out_of_stock.v1, order.cancellation.requested.v1")
+ComponentQueue(rabbitmq_payment_request, "RabbitMQ", "Message Broker", "Exchange interno: payment.requested.v1 (routing keys: credit/debit)")
+ComponentQueue(rabbitmq_payment_processed, "RabbitMQ", "Message Broker", "Exchange interno: payment.processed.v1")
+ComponentQueue(rabbitmq_out, "RabbitMQ", "Message Broker", "Saída: payment.approved.v1 / payment.declined.v1 / payment.refunded.v1")
+
+System_Ext(ecommerce, "E-commerce System", "Publica order.created e order.cancellation.requested")
+System_Ext(inventory, "Inventory System", "Publica inventory.out_of_stock")
+System_Ext(consumers, "Event Consumers", "Consome payment.approved / payment.declined / payment.refunded (ex: E-commerce, Audit)")
+
+Rel_Down(ecommerce, rabbitmq_in, "Publica order.created / order.cancellation.requested", "AMQP")
+Rel_Down(inventory, rabbitmq_in, "Publica inventory.out_of_stock", "AMQP")
+
+Rel_Down(rabbitmq_in, orderCreatedConsumer, "order.created", "AMQP")
+Rel_Down(rabbitmq_in, inventoryOutOfStockConsumer, "inventory.out_of_stock", "AMQP")
+Rel_Down(rabbitmq_in, orderCancellationRequestedConsumer, "order.cancellation.requested", "AMQP")
+
+Rel_Down(orderCreatedConsumer, paymentService, "Processa")
+Rel_Down(inventoryOutOfStockConsumer, paymentService, "requestVoid")
+Rel_Down(orderCancellationRequestedConsumer, paymentService, "requestVoid")
+Rel_Down(orderCreatedConsumer, rabbitmq_payment_request, "Publica via")
+Rel_Down(paymentService, repository, "Persiste")
+Rel_Down(repository, database, "SQL")
+
+Rel_Down(rabbitmq_payment_request, paymentRequestedCreditConsumer, "credit", "AMQP")
+Rel_Down(rabbitmq_payment_request, paymentRequestedDebitConsumer, "debit", "AMQP")
+
+Rel_Down(paymentRequestedCreditConsumer, creditGateway, "Simula", "")
+Rel_Down(paymentRequestedDebitConsumer, debitGateway, "Simula", "")
+
+Rel_Up(paymentRequestedCreditConsumer, rabbitmq_payment_processed, "Publica", "AMQP")
+Rel_Up(paymentRequestedDebitConsumer, rabbitmq_payment_processed, "Publica", "AMQP")
+
+Rel_Down(rabbitmq_payment_processed, paymentProcessedConsumer, "Consome", "AMQP")
+Rel_Down(paymentProcessedConsumer, paymentService, "Atualiza status / tryRefundOnApproval")
+Rel_Up(paymentProcessedConsumer, rabbitmq_out, "Publica approved/declined/refunded", "AMQP")
+Rel_Up(inventoryOutOfStockConsumer, rabbitmq_out, "Publica payment.refunded", "AMQP")
+Rel_Up(orderCancellationRequestedConsumer, rabbitmq_out, "Publica payment.refunded", "AMQP")
+Rel_Down(rabbitmq_out, consumers, "Entrega", "AMQP")
+
+SHOW_LEGEND()
+
+@enduml

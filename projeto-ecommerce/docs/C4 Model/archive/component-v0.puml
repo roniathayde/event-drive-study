@@ -1,0 +1,54 @@
+@startuml E-commerce Component Diagram
+!include <C4/C4_Component>
+
+LAYOUT_LANDSCAPE()
+LAYOUT_WITH_LEGEND()
+
+title Component Diagram - E-commerce (Fase 1)
+
+Person(customer, "Cliente", "Usuário que realiza compras")
+
+Container_Boundary(api, "E-commerce API") {
+    Component(orderController, "Order Controller", "Express.js", "Gerencia requisições HTTP de pedidos")
+    Component(orderService, "Order Service", "TypeScript", "Orquestra criação de pedidos de forma síncrona")
+    Component(paymentService, "Payment Service", "TypeScript", "Processa pagamentos (chamada síncrona)")
+    Component(inventoryService, "Inventory Service", "TypeScript", "Gerencia estoque (chamada síncrona)")
+
+    Component(creditGateway, "Credit Gateway", "TypeScript", "Gateway fake de pagamento com cartão de crédito")
+    Component(debitGateway, "Debit Gateway", "TypeScript", "Gateway fake de pagamento com cartão de débito")
+
+    Component(orderRepo, "Order Repository", "TypeScript", "Acesso a dados de pedidos")
+    Component(paymentRepo, "Payment Repository", "TypeScript", "Acesso a dados de pagamentos")
+    Component(inventoryRepo, "Inventory Repository", "TypeScript", "Acesso a dados de estoque")
+    Component(auditRepo, "Audit Log Repository", "TypeScript", "Acesso a dados de auditoria")
+
+    Component(auditService, "Audit Log Service", "TypeScript", "Registra logs de auditoria de todas operações")
+
+    ComponentDb(database, "SQLite Database", "SQLite", "Banco de dados único compartilhado")
+}
+
+Rel(customer, orderController, "Cria pedido", "HTTP/REST")
+
+Rel(orderController, orderService, "Usa")
+Rel(orderService, paymentService, "Usa", "**Síncrono**")
+Rel(orderService, inventoryService, "Usa", "**Síncrono**")
+
+Rel(paymentService, creditGateway, "Usa")
+Rel(paymentService, debitGateway, "Usa")
+
+Rel(orderService, orderRepo, "Usa")
+Rel(paymentService, paymentRepo, "Usa")
+Rel(inventoryService, inventoryRepo, "Usa")
+
+Rel(orderRepo, database, "Lê e escreve", "better-sqlite3")
+Rel(paymentRepo, database, "Lê e escreve", "better-sqlite3")
+Rel(inventoryRepo, database, "Lê e escreve", "better-sqlite3")
+Rel(auditRepo, database, "Escreve", "better-sqlite3")
+
+Rel(orderService, auditService, "Registra auditoria")
+Rel(paymentService, auditService, "Registra auditoria")
+Rel(inventoryService, auditService, "Registra auditoria")
+
+Rel(auditService, auditRepo, "Usa")
+
+SHOW_LEGEND()

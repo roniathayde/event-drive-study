@@ -1,0 +1,173 @@
+@startuml Coreografia - Visao Macro
+title Coreografia - quem fala com quem (modelo atual)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam componentStyle rectangle
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam ArrowColor #E3E3E8
+skinparam ArrowFontColor #E3E3E8
+skinparam component {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam queue {
+  BackgroundColor #2A2A2E
+  BorderColor #E3E3E8
+  FontColor #E3E3E8
+}
+skinparam actorBackgroundColor #2A2A2E
+skinparam actorBorderColor #E3E3E8
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+actor Cliente
+component "ecommerce" as EC
+queue "RabbitMQ\n(topic exchange)" as RMQ
+component "payment" as PAY
+component "inventory" as INV
+
+Cliente --> EC : cria pedido
+EC --> RMQ : order.created (fato)
+RMQ --> PAY : order.created
+RMQ --> INV : order.created
+PAY --> RMQ : payment.approved | declined
+INV --> RMQ : inventory.reserved | out_of_stock
+RMQ --> EC : fatos de payment e inventory
+RMQ --> PAY : inventory.out_of_stock\n[payment reage ao fato]
+RMQ --> INV : payment.declined\n[inventory reage ao fato]
+
+note bottom of RMQ
+  Ninguem comanda ninguem.
+  Cada servico reage a fatos e
+  decide sozinho o que fazer.
+end note
+
+@enduml
+
+
+@startuml Coreografia - Caminho Feliz
+title Coreografia - caminho feliz (pedido aprovado)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam sequence {
+  ArrowColor #E3E3E8
+  ArrowFontColor #E3E3E8
+  LifeLineBorderColor #8A8A8F
+  LifeLineBackgroundColor #2A2A2E
+  ParticipantBorderColor #E3E3E8
+  ParticipantBackgroundColor #2A2A2E
+  ParticipantFontColor #E3E3E8
+  QueueBorderColor #E3E3E8
+  QueueBackgroundColor #2A2A2E
+  QueueFontColor #E3E3E8
+  ActorBorderColor #E3E3E8
+  ActorBackgroundColor #2A2A2E
+  ActorFontColor #E3E3E8
+  GroupBackgroundColor #2A2A2E
+  GroupBorderColor #8A8A8F
+  GroupFontColor #E3E3E8
+  GroupHeaderFontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+actor Cliente
+participant "ecommerce" as EC
+queue "RabbitMQ" as RMQ
+participant "payment" as PAY
+participant "inventory" as INV
+
+Cliente -> EC : cria pedido
+EC -> RMQ : order.created
+RMQ -> PAY : order.created
+RMQ -> INV : order.created
+
+par os dois lados em paralelo
+  PAY -> RMQ : payment.approved
+else
+  INV -> RMQ : inventory.reserved
+end
+
+RMQ -> EC : payment.approved
+RMQ -> EC : inventory.reserved
+EC -> EC : observou os dois fatos: pedido OK
+EC -> RMQ : order.completed (fato)
+
+note over EC
+  ecommerce nao pediu nada a ninguem.
+  So observou os fatos e juntou o resultado.
+end note
+
+@enduml
+
+
+@startuml Coreografia - Quando um passo falha
+title Coreografia - quando um passo falha (estoque OK, pagamento recusado)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam backgroundColor #121212
+skinparam defaultFontColor #E3E3E8
+skinparam titleFontColor #E3E3E8
+skinparam sequence {
+  ArrowColor #E3E3E8
+  ArrowFontColor #E3E3E8
+  LifeLineBorderColor #8A8A8F
+  LifeLineBackgroundColor #2A2A2E
+  ParticipantBorderColor #E3E3E8
+  ParticipantBackgroundColor #2A2A2E
+  ParticipantFontColor #E3E3E8
+  QueueBorderColor #E3E3E8
+  QueueBackgroundColor #2A2A2E
+  QueueFontColor #E3E3E8
+}
+skinparam note {
+  BackgroundColor #2A2A2E
+  BorderColor #8A8A8F
+  FontColor #E3E3E8
+}
+
+participant "ecommerce" as EC
+queue "RabbitMQ" as RMQ
+participant "payment" as PAY
+participant "inventory" as INV
+
+EC -> RMQ : order.created
+RMQ -> INV : order.created
+RMQ -> PAY : order.created
+INV -> RMQ : inventory.reserved
+PAY -> RMQ : payment.declined
+RMQ -> EC : inventory.reserved
+RMQ -> EC : payment.declined
+
+RMQ -> INV : payment.declined
+note over INV
+  ninguem mandou.
+  inventory ouve o fato da falha
+  e reage por conta propria.
+end note
+INV -> RMQ : inventory.released
+RMQ -> EC : inventory.released
+EC -> RMQ : order.failed (fato)
+
+note over EC, INV
+  Esse "desfazer o que ja foi feito
+  quando um passo falha" tem nome: saga.
+  Detalhamos nas proximas aulas.
+end note
+
+@enduml

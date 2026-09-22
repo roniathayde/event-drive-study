@@ -1,0 +1,1390 @@
+asyncapi: 3.1.0
+info:
+  title: E-commerce Event-Driven Architecture API
+  version: 3.0.0
+  description: "Sistema de e-commerce orientado a eventos usando arquitetura EDA (Event-Driven Architecture).\n\nCurso de Fundamentos de Arquiteturas Event-Driven (EDA).\n\n\U0001F48ETech Leads Club\U0001F48E\n\nO sistema é composto por 4 serviços principais:\n- **Order Service**: Gerencia pedidos e atua como **read model** — projeta o status da saga a partir dos eventos observados (não orquestra os demais serviços)\n- **Payment Service**: Processa pagamentos via gateways externos e **se autoestorna** ao observar falha de estoque ou cancelamento\n- **Inventory Service**: Gerencia estoque de produtos e **devolve a reserva** ao observar pagamento recusado ou cancelamento\n- **Audit Service**: Auditoria e logging de todos os eventos do sistema\n\n## Saga Coreografada (Anthology Saga)\n\nO fluxo distribuído é implementado como uma **saga coreografada** (comunicação assíncrona, consistência eventual, coordenação coreografada). Não há orquestrador: cada serviço reage aos eventos publicados pelos outros e executa sua própria compensação. O Order Service apenas observa os eventos de leg e **deriva o status** do pedido (RUNNING → COMPLETED / COMPENSATING → FAILED / CANCELLED).\n\n- `payment` escuta `inventory.out_of_stock` → estorna (`payment.refunded`).\n- `inventory` escuta `payment.declined` → devolve estoque (`inventory.released`).\n- `payment` e `inventory` escutam `order.cancellation.requested` → compensam.\n\n## Padrões adotados\n\n- **Envelope CloudEvents v1.0** (CNCF) — todos os eventos seguem a especificação\n  [CloudEvents v1.0.2](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md)\n  em **Structured Mode** (envelope e dados em um único payload JSON).\n- **Exchanges** nomeados a partir do `type` do CloudEvent:\n  `com.fake-ecommerce.<domain>.<action>.v<version>`, com a ação no passado\n  (eventos representam fatos que já ocorreram). Todos os exchanges são do tipo `topic` e duráveis.\n- **Queues** nomeadas no padrão `<consumer>.<operation>` — cada consumidor é dono\n  da sua própria queue e do binding até o exchange que quer consumir.\n"
+  contact:
+    name: Cristiano Raffi Cunha
+    email: contato@cristianoprogramador.com
+  license:
+    name: MIT
+    url: 'https://opensource.org/licenses/MIT'
+servers:
+  production:
+    host: 'localhost:5672'
+    protocol: amqp
+    description: RabbitMQ broker para ambiente de produção
+    security:
+      - $ref: '#/components/securitySchemes/rabbitmqAuth'
+    tags:
+      - name: production
+        description: Ambiente de produção
+channels:
+  orderCreated:
+    address: com.fake-ecommerce.order.created.v1
+    description: |
+      Canal para eventos de criação de pedidos.
+      Publicado quando um novo pedido é criado com sucesso no sistema.
+
+      **Exchange Type**: fanout
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      orderCreatedMessage:
+        $ref: '#/components/messages/OrderCreated'
+  orderCompleted:
+    address: com.fake-ecommerce.order.completed.v1
+    description: >
+      Canal para eventos de conclusão de pedidos.
+
+      Publicado quando um pedido é finalizado com sucesso (pagamento aprovado e
+      estoque atualizado).
+
+
+      **Exchange Type**: fanout
+
+      **Durability**: true
+
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      orderCompletedMessage:
+        $ref: '#/components/messages/OrderCompleted'
+  orderFailed:
+    address: com.fake-ecommerce.order.failed.v1
+    description: >
+      Canal para eventos de falha em pedidos.
+
+      Publicado quando um pedido falha (pagamento recusado ou erro no
+      processamento).
+
+
+      **Exchange Type**: fanout
+
+      **Durability**: true
+
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      orderFailedMessage:
+        $ref: '#/components/messages/OrderFailed'
+  orderCancelled:
+    address: com.fake-ecommerce.order.cancelled.v1
+    description: |
+      Canal para eventos de cancelamento de pedido (fato/desfecho).
+      Publicado pelo Order Service quando a saga de compensação termina e o
+      pedido foi efetivamente cancelado (pagamento estornado e estoque devolvido).
+
+      **Exchange Type**: topic
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      orderCancelledMessage:
+        $ref: '#/components/messages/OrderCancelled'
+  orderCancellationRequested:
+    address: com.fake-ecommerce.order.cancellation.requested.v1
+    description: |
+      Canal para eventos de solicitação de cancelamento.
+      Publicado pelo Order Service quando o cliente solicita o cancelamento de
+      um pedido (`POST /api/orders/:id/cancel`). É um **fato de domínio**, não
+      um comando: payment e inventory reagem por conta própria, cada um
+      executando sua compensação (estorno / devolução de estoque).
+
+      **Exchange Type**: topic
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      orderCancellationRequestedMessage:
+        $ref: '#/components/messages/OrderCancellationRequested'
+  paymentRequested:
+    address: com.fake-ecommerce.payment.requested.v1
+    description: >
+      Canal para eventos de requisição de pagamento ao gateway.
+
+      Publicado pelo Payment Service para encaminhar a cobrança ao gateway
+      adequado
+
+      (credit ou debit) via routing key.
+
+
+      **Exchange Type**: topic (routing keys: `credit`, `debit`)
+
+      **Durability**: true
+
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      paymentRequestedMessage:
+        $ref: '#/components/messages/PaymentRequested'
+  paymentProcessed:
+    address: com.fake-ecommerce.payment.processed.v1
+    description: >
+      Canal interno do Payment Service. Publicado pelos gateways (credit/debit)
+      após
+
+      simular o processamento do pagamento, contendo o resultado bruto do
+      gateway.
+
+
+      **Exchange Type**: fanout
+
+      **Durability**: true
+
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      paymentProcessedMessage:
+        $ref: '#/components/messages/PaymentProcessed'
+  paymentApproved:
+    address: com.fake-ecommerce.payment.approved.v1
+    description: >
+      Canal para eventos de pagamento aprovado.
+
+      Publicado quando um pagamento é processado e aprovado com sucesso pelo
+      gateway.
+
+
+      **Exchange Type**: fanout
+
+      **Durability**: true
+
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      paymentApprovedMessage:
+        $ref: '#/components/messages/PaymentApproved'
+  paymentDeclined:
+    address: com.fake-ecommerce.payment.declined.v1
+    description: |
+      Canal para eventos de pagamento recusado.
+      Publicado quando um pagamento é recusado pelo gateway de pagamento.
+
+      **Exchange Type**: fanout
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      paymentDeclinedMessage:
+        $ref: '#/components/messages/PaymentDeclined'
+  paymentRefunded:
+    address: com.fake-ecommerce.payment.refunded.v1
+    description: |
+      Canal para eventos de estorno de pagamento (compensação).
+      Publicado pelo Payment Service quando um pagamento previamente aprovado é
+      estornado — em resposta a `inventory.out_of_stock` ou a
+      `order.cancellation.requested`. Consumido pelo Order Service para projetar
+      o status da saga (FAILED / CANCELLED).
+
+      **Exchange Type**: topic
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      paymentRefundedMessage:
+        $ref: '#/components/messages/PaymentRefunded'
+  inventoryReserved:
+    address: com.fake-ecommerce.inventory.reserved.v1
+    description: |
+      Canal para eventos de reserva de estoque.
+      Publicado pelo Inventory Service quando todos os itens de um pedido
+      foram reservados com sucesso (operação atômica).
+
+      **Exchange Type**: topic
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      inventoryReservedMessage:
+        $ref: '#/components/messages/InventoryReserved'
+  inventoryOutOfStock:
+    address: com.fake-ecommerce.inventory.out_of_stock.v1
+    description: |
+      Canal para eventos de estoque insuficiente.
+      Publicado pelo Inventory Service quando ao menos um item do pedido não
+      pode ser reservado (produto inexistente ou quantidade indisponível).
+      Nenhum item é decrementado — a reserva é atômica.
+
+      **Exchange Type**: topic
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      inventoryOutOfStockMessage:
+        $ref: '#/components/messages/InventoryOutOfStock'
+  inventoryReleased:
+    address: com.fake-ecommerce.inventory.released.v1
+    description: |
+      Canal para eventos de liberação de estoque (compensação).
+      Publicado pelo Inventory Service quando o estoque previamente reservado é
+      devolvido — em resposta a `payment.declined` ou a
+      `order.cancellation.requested`. Consumido pelo Order Service para projetar
+      o status da saga (FAILED / CANCELLED).
+
+      **Exchange Type**: topic
+      **Durability**: true
+      **Envelope**: CloudEvents v1.0 (Structured Mode)
+    messages:
+      inventoryReleasedMessage:
+        $ref: '#/components/messages/InventoryReleased'
+operations:
+  publishOrderCreated:
+    action: send
+    title: Publish order.created
+    summary: Order Service publica o evento quando um pedido é criado
+    description: >
+      Operação executada pelo Order Service após criar um novo pedido no
+      sistema.
+
+      O evento contém informações completas do pedido incluindo itens e valores.
+    channel:
+      $ref: '#/channels/orderCreated'
+    messages:
+      - $ref: '#/channels/orderCreated/messages/orderCreatedMessage'
+    tags:
+      - name: order-service
+        description: Operações do serviço de pedidos
+  publishOrderCompleted:
+    action: send
+    title: Publish order.completed
+    summary: Order Service publica o evento quando o pedido é concluído
+    description: >
+      Operação executada pelo Order Service quando o pedido é finalizado com
+      sucesso.
+
+      Indica que pagamento foi aprovado e estoque foi atualizado.
+    channel:
+      $ref: '#/channels/orderCompleted'
+    messages:
+      - $ref: '#/channels/orderCompleted/messages/orderCompletedMessage'
+    tags:
+      - name: order-service
+        description: Operações do serviço de pedidos
+  publishOrderFailed:
+    action: send
+    title: Publish order.failed
+    summary: Order Service publica o evento quando o pedido falha
+    description: >
+      Operação executada pelo Order Service quando o pedido falha por algum
+      motivo
+
+      (pagamento recusado, estoque insuficiente, erro de processamento, etc).
+    channel:
+      $ref: '#/channels/orderFailed'
+    messages:
+      - $ref: '#/channels/orderFailed/messages/orderFailedMessage'
+    tags:
+      - name: order-service
+        description: Operações do serviço de pedidos
+  publishOrderCancellationRequested:
+    action: send
+    title: Publish order.cancellation.requested
+    summary: Order Service publica o fato de que o cliente solicitou cancelamento
+    description: >
+      Operação executada pelo Order Service ao receber `POST
+      /api/orders/:id/cancel`.
+
+      Publica um **fato de domínio** (não um comando): payment e inventory
+      reagem por conta própria e executam suas compensações.
+    channel:
+      $ref: '#/channels/orderCancellationRequested'
+    messages:
+      - $ref: >-
+          #/channels/orderCancellationRequested/messages/orderCancellationRequestedMessage
+    tags:
+      - name: order-service
+        description: Operações do serviço de pedidos
+  publishOrderCancelled:
+    action: send
+    title: Publish order.cancelled
+    summary: Order Service publica o evento quando o pedido é efetivamente cancelado
+    description: >
+      Operação executada pelo Order Service quando a saga de compensação termina
+      e o pedido foi cancelado (pagamento estornado e estoque devolvido).
+    channel:
+      $ref: '#/channels/orderCancelled'
+    messages:
+      - $ref: '#/channels/orderCancelled/messages/orderCancelledMessage'
+    tags:
+      - name: order-service
+        description: Operações do serviço de pedidos
+  publishPaymentRequested:
+    action: send
+    title: Publish payment.requested
+    summary: Payment Service publica a requisição de pagamento ao gateway
+    description: >
+      Operação executada pelo Payment Service após consumir `order.created.v1`.
+
+      A routing key (`credit` ou `debit`) é usada para roteamento ao gateway
+      correto.
+    channel:
+      $ref: '#/channels/paymentRequested'
+    messages:
+      - $ref: '#/channels/paymentRequested/messages/paymentRequestedMessage'
+    tags:
+      - name: payment-service
+        description: Operações do serviço de pagamento
+  publishPaymentProcessed:
+    action: send
+    title: Publish payment.processed
+    summary: Gateway publica o resultado do processamento (interno do Payment Service)
+    description: >
+      Publicado pelo Credit/Debit Gateway após simular o processamento. Carrega
+      o
+
+      resultado bruto do gateway, consumido apenas internamente pelo Payment
+      Service.
+    channel:
+      $ref: '#/channels/paymentProcessed'
+    messages:
+      - $ref: '#/channels/paymentProcessed/messages/paymentProcessedMessage'
+    tags:
+      - name: payment-service
+        description: Operações do serviço de pagamento
+  publishPaymentApproved:
+    action: send
+    title: Publish payment.approved
+    summary: Payment Service publica o evento quando o pagamento é aprovado
+    description: >
+      Operação executada pelo Payment Service após aprovação bem-sucedida do
+      pagamento
+
+      através do gateway externo (crédito ou débito).
+    channel:
+      $ref: '#/channels/paymentApproved'
+    messages:
+      - $ref: '#/channels/paymentApproved/messages/paymentApprovedMessage'
+    tags:
+      - name: payment-service
+        description: Operações do serviço de pagamento
+  publishPaymentDeclined:
+    action: send
+    title: Publish payment.declined
+    summary: Payment Service publica o evento quando o pagamento é recusado
+    description: >
+      Operação executada pelo Payment Service quando o pagamento é recusado
+
+      pelo gateway de pagamento (fundos insuficientes, cartão expirado, fraude,
+      etc).
+    channel:
+      $ref: '#/channels/paymentDeclined'
+    messages:
+      - $ref: '#/channels/paymentDeclined/messages/paymentDeclinedMessage'
+    tags:
+      - name: payment-service
+        description: Operações do serviço de pagamento
+  publishPaymentRefunded:
+    action: send
+    title: Publish payment.refunded
+    summary: Payment Service publica o evento quando um pagamento é estornado
+    description: >
+      Operação executada pelo Payment Service ao compensar um pagamento já
+      aprovado, em resposta a `inventory.out_of_stock` ou
+      `order.cancellation.requested` (autoestorno da saga coreografada).
+    channel:
+      $ref: '#/channels/paymentRefunded'
+    messages:
+      - $ref: '#/channels/paymentRefunded/messages/paymentRefundedMessage'
+    tags:
+      - name: payment-service
+        description: Operações do serviço de pagamento
+  publishInventoryReserved:
+    action: send
+    title: Publish inventory.reserved
+    summary: Inventory Service publica o evento quando o estoque é reservado
+    description: >
+      Operação executada pelo Inventory Service após reservar estoque com
+      sucesso para todos os itens do pedido. Indica a quantidade reservada e
+      o estoque remanescente de cada produto.
+    channel:
+      $ref: '#/channels/inventoryReserved'
+    messages:
+      - $ref: '#/channels/inventoryReserved/messages/inventoryReservedMessage'
+    tags:
+      - name: inventory-service
+        description: Operações do serviço de inventário
+  publishInventoryOutOfStock:
+    action: send
+    title: Publish inventory.out_of_stock
+    summary: Inventory Service publica quando não há estoque suficiente
+    description: >
+      Operação executada pelo Inventory Service quando ao menos um item do
+      pedido não pode ser reservado (produto inexistente ou estoque
+      insuficiente). A reserva é atômica — se um item falha, nenhum é
+      decrementado.
+    channel:
+      $ref: '#/channels/inventoryOutOfStock'
+    messages:
+      - $ref: >-
+          #/channels/inventoryOutOfStock/messages/inventoryOutOfStockMessage
+    tags:
+      - name: inventory-service
+        description: Operações do serviço de inventário
+  publishInventoryReleased:
+    action: send
+    title: Publish inventory.released
+    summary: Inventory Service publica o evento quando devolve o estoque reservado
+    description: >
+      Operação executada pelo Inventory Service ao devolver uma reserva de
+      estoque, em resposta a `payment.declined` ou
+      `order.cancellation.requested` (compensação da saga coreografada).
+    channel:
+      $ref: '#/channels/inventoryReleased'
+    messages:
+      - $ref: '#/channels/inventoryReleased/messages/inventoryReleasedMessage'
+    tags:
+      - name: inventory-service
+        description: Operações do serviço de inventário
+components:
+  messages:
+    OrderCreated:
+      name: OrderCreated
+      title: Pedido Criado
+      summary: Evento publicado quando um novo pedido é criado no sistema
+      description: >
+        Evento do tipo Event-Carried State Transfer contendo dados completos do
+        pedido.
+
+        Publicado pelo Order Service imediatamente após a criação do pedido no
+        banco de dados.
+
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/OrderCreatedEvent'
+      examples:
+        - name: OrderCreatedExample
+          summary: Exemplo de pedido criado com 2 produtos
+          payload:
+            specversion: '1.0'
+            id: 550e8400-e29b-41d4-a716-446655440000
+            type: com.fake-ecommerce.order.created.v1
+            source: /ecommerce-service/orders
+            subject: order-1001
+            time: 2026-01-15T10:30:00.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1001
+              customerName: John Smith
+              totalAmount: 259.98
+              items:
+                - product_name: Dell Notebook
+                  quantity: 1
+                  price: 199.99
+                - product_name: Logitech Mouse
+                  quantity: 2
+                  price: 29.99
+              payment:
+                card_number: '4111111111111111'
+                payment_type: credit
+    OrderCompleted:
+      name: OrderCompleted
+      title: Pedido Concluído
+      summary: Evento publicado quando um pedido é finalizado com sucesso
+      description: >
+        Evento de notificação indicando que o pedido foi processado
+        completamente.
+
+        Publicado pelo Order Service após aprovação do pagamento e atualização
+        do estoque.
+
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/OrderCompletedEvent'
+      examples:
+        - name: OrderCompletedExample
+          summary: Exemplo de pedido concluído
+          payload:
+            specversion: '1.0'
+            id: 660e8400-e29b-41d4-a716-446655440111
+            type: com.fake-ecommerce.order.completed.v1
+            source: /ecommerce-service/orders
+            subject: order-1001
+            time: 2026-01-15T10:30:30.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1001
+              status: paid
+    OrderFailed:
+      name: OrderFailed
+      title: Pedido Falhou
+      summary: Evento publicado quando um pedido falha no processamento
+      description: >
+        Evento indicando falha no processamento do pedido.
+
+        Pode ocorrer por pagamento recusado, estoque insuficiente ou outros
+        erros.
+
+        Publicado pelo Order Service quando qualquer etapa crítica falha.
+
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/OrderFailedEvent'
+      examples:
+        - name: OrderFailedPaymentExample
+          summary: Exemplo de pedido falho por pagamento recusado
+          payload:
+            specversion: '1.0'
+            id: 770e8400-e29b-41d4-a716-446655440222
+            type: com.fake-ecommerce.order.failed.v1
+            source: /ecommerce-service/orders
+            subject: order-1002
+            time: 2026-01-15T10:31:00.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1002
+              status: failed
+              reason: payment_declined
+    OrderCancellationRequested:
+      name: OrderCancellationRequested
+      title: Cancelamento de Pedido Solicitado
+      summary: Fato publicado quando o cliente solicita o cancelamento de um pedido
+      description: |
+        Evento de domínio publicado pelo Order Service ao receber a requisição
+        de cancelamento (`POST /api/orders/:id/cancel`). Não é um comando:
+        payment e inventory reagem por conta própria executando suas compensações.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/OrderCancellationRequestedEvent'
+      examples:
+        - name: OrderCancellationRequestedExample
+          summary: Exemplo de solicitação de cancelamento
+          payload:
+            specversion: '1.0'
+            id: 11ae8400-e29b-41d4-a716-446655440aaa
+            type: com.fake-ecommerce.order.cancellation.requested.v1
+            source: /ecommerce-service/orders
+            subject: order-1001
+            time: 2026-01-15T10:35:00.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1001
+    OrderCancelled:
+      name: OrderCancelled
+      title: Pedido Cancelado
+      summary: Evento publicado quando um pedido é efetivamente cancelado
+      description: |
+        Evento de notificação indicando que a saga de compensação terminou e o
+        pedido foi cancelado (pagamento estornado e estoque devolvido).
+        Publicado pelo Order Service.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/OrderCancelledEvent'
+      examples:
+        - name: OrderCancelledExample
+          summary: Exemplo de pedido cancelado
+          payload:
+            specversion: '1.0'
+            id: 22ae8400-e29b-41d4-a716-446655440bbb
+            type: com.fake-ecommerce.order.cancelled.v1
+            source: /ecommerce-service/orders
+            subject: order-1001
+            time: 2026-01-15T10:35:05.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1001
+              status: cancelled
+    PaymentRequested:
+      name: PaymentRequested
+      title: Pagamento Requisitado
+      summary: Requisição de cobrança encaminhada ao gateway de pagamento
+      description: >
+        Evento publicado pelo Payment Service ao consumir `order.created.v1`.
+
+        A routing key define o gateway (`credit` ou `debit`) que processará o
+        pagamento.
+
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/PaymentRequestedEvent'
+      examples:
+        - name: PaymentRequestedCreditExample
+          summary: Requisição de pagamento via gateway de crédito
+          payload:
+            specversion: '1.0'
+            id: cc0e8400-e29b-41d4-a716-446655440777
+            type: com.fake-ecommerce.payment.requested.v1
+            source: /payment-service/payments
+            subject: order-1001
+            time: 2026-01-15T10:30:10.000Z
+            datacontenttype: application/json
+            data:
+              paymentRequestId: 1
+              externalId: '1001'
+              amount: 259.98
+              paymentMethod: credit
+              cardNumber: '4111111111111111'
+    PaymentProcessed:
+      name: PaymentProcessed
+      title: Pagamento Processado
+      summary: Resultado bruto do gateway (interno do Payment Service)
+      description: |
+        Evento publicado pelo Credit/Debit Gateway após simular o processamento.
+        Consumido apenas internamente pelo Payment Service, que decide então
+        publicar `payment.approved.v1` ou `payment.declined.v1`.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/PaymentProcessedEvent'
+      examples:
+        - name: PaymentProcessedApprovedExample
+          summary: Pagamento aprovado pelo Credit Gateway
+          payload:
+            specversion: '1.0'
+            id: dd0e8400-e29b-41d4-a716-446655440888
+            type: com.fake-ecommerce.payment.processed.v1
+            source: /payment-service/gateways/credit
+            subject: payment-1
+            time: 2026-01-15T10:30:12.500Z
+            datacontenttype: application/json
+            data:
+              paymentRequestId: 1
+              externalId: 1001
+              amount: 259.98
+              status: approved
+              gateway: credit
+              gatewayResponse:
+                code: '00'
+                message: Approved by Credit Gateway
+    PaymentApproved:
+      name: PaymentApproved
+      title: Pagamento Aprovado
+      summary: Evento publicado quando um pagamento é aprovado
+      description: >
+        Evento indicando aprovação bem-sucedida do pagamento pelo gateway
+        externo.
+
+        Publicado pelo Payment Service após resposta positiva do gateway de
+        pagamento.
+
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/PaymentApprovedEvent'
+      examples:
+        - name: PaymentApprovedCreditExample
+          summary: Exemplo de pagamento aprovado com cartão de crédito
+          payload:
+            specversion: '1.0'
+            id: 880e8400-e29b-41d4-a716-446655440333
+            type: com.fake-ecommerce.payment.approved.v1
+            source: /payment-service/payments
+            subject: order-1001
+            time: 2026-01-15T10:30:15.000Z
+            datacontenttype: application/json
+            data:
+              externalId: 1001
+              paymentRequestId: 1
+              status: approved
+              processedAt: 2026-01-15T10:30:15.500Z
+    PaymentDeclined:
+      name: PaymentDeclined
+      title: Pagamento Recusado
+      summary: Evento publicado quando um pagamento é recusado
+      description: |
+        Evento indicando recusa do pagamento pelo gateway externo.
+        Publicado pelo Payment Service após resposta negativa do gateway.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/PaymentDeclinedEvent'
+      examples:
+        - name: PaymentDeclinedInsufficientFundsExample
+          summary: Exemplo de pagamento recusado por saldo insuficiente
+          payload:
+            specversion: '1.0'
+            id: 990e8400-e29b-41d4-a716-446655440444
+            type: com.fake-ecommerce.payment.declined.v1
+            source: /payment-service/payments
+            subject: order-1002
+            time: 2026-01-15T10:30:20.000Z
+            datacontenttype: application/json
+            data:
+              externalId: 1002
+              paymentRequestId: 2
+              status: declined
+              reason: insufficient_funds
+              processedAt: 2026-01-15T10:30:20.500Z
+    PaymentRefunded:
+      name: PaymentRefunded
+      title: Pagamento Estornado
+      summary: Evento publicado quando um pagamento aprovado é estornado (compensação)
+      description: |
+        Evento indicando que um pagamento previamente aprovado foi estornado.
+        Publicado pelo Payment Service em resposta a `inventory.out_of_stock`
+        ou `order.cancellation.requested` (autoestorno da saga coreografada).
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/PaymentRefundedEvent'
+      examples:
+        - name: PaymentRefundedExample
+          summary: Exemplo de pagamento estornado após falha de estoque
+          payload:
+            specversion: '1.0'
+            id: 33ae8400-e29b-41d4-a716-446655440ccc
+            type: com.fake-ecommerce.payment.refunded.v1
+            source: /payment-service/payments
+            subject: order-1001
+            time: 2026-01-15T10:30:18.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1001
+              paymentRequestId: 1
+              refundedAt: 2026-01-15T10:30:18.500Z
+    InventoryReserved:
+      name: InventoryReserved
+      title: Estoque Reservado
+      summary: Evento publicado quando estoque é reservado para um pedido
+      description: |
+        Evento indicando que quantidade de estoque foi reservada com sucesso.
+        Publicado pelo Inventory Service após atualização do banco de dados.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/InventoryReservedEvent'
+      examples:
+        - name: InventoryReservedExample
+          summary: Exemplo de reserva atômica de múltiplos itens
+          payload:
+            specversion: '1.0'
+            id: aa0e8400-e29b-41d4-a716-446655440555
+            type: com.fake-ecommerce.inventory.reserved.v1
+            source: /inventory-service
+            subject: order-1001
+            time: 2026-01-15T10:30:25.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1001
+              reserved_items:
+                - productName: Dell Notebook
+                  quantityReserved: 1
+                  remainingStock: 49
+                - productName: Logitech Mouse
+                  quantityReserved: 2
+                  remainingStock: 102
+    InventoryOutOfStock:
+      name: InventoryOutOfStock
+      title: Estoque Insuficiente
+      summary: Evento publicado quando algum item do pedido não pode ser reservado
+      description: |
+        Evento indicando que a reserva de estoque falhou — algum produto não
+        existe ou a quantidade solicitada excede o estoque disponível.
+        A reserva é atômica: se um item falha, nenhum é decrementado.
+        Publicado pelo Inventory Service.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/InventoryOutOfStockEvent'
+      examples:
+        - name: InventoryOutOfStockExample
+          summary: Pedido com produto inexistente e item com estoque insuficiente
+          payload:
+            specversion: '1.0'
+            id: ee0e8400-e29b-41d4-a716-446655440999
+            type: com.fake-ecommerce.inventory.out_of_stock.v1
+            source: /inventory-service
+            subject: order-1002
+            time: 2026-01-15T10:30:25.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1002
+              unavailable_items:
+                - productName: Dell Notebook
+                  available: 2
+                  requested: 5
+                  reason: insufficient_stock
+                - productName: Produto Inexistente
+                  available: 0
+                  requested: 1
+                  reason: product_not_found
+    InventoryReleased:
+      name: InventoryReleased
+      title: Estoque Liberado
+      summary: Evento publicado quando estoque reservado é devolvido (compensação)
+      description: |
+        Evento indicando que a reserva de estoque de um pedido foi devolvida.
+        Publicado pelo Inventory Service em resposta a `payment.declined` ou
+        `order.cancellation.requested` (compensação da saga coreografada).
+        Todos os itens reservados para o pedido são devolvidos atomicamente.
+        Envelope: CloudEvents v1.0.
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/InventoryReleasedEvent'
+      examples:
+        - name: InventoryReleasedExample
+          summary: Exemplo de devolução de estoque de um pedido
+          payload:
+            specversion: '1.0'
+            id: bb0e8400-e29b-41d4-a716-446655440666
+            type: com.fake-ecommerce.inventory.released.v1
+            source: /inventory-service
+            subject: order-1002
+            time: 2026-01-15T10:31:30.000Z
+            datacontenttype: application/json
+            data:
+              orderId: 1002
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      description: |
+        Envelope CloudEvents v1.0 (Structured Mode).
+        Atributos comuns a todos os eventos da plataforma.
+      required:
+        - specversion
+        - id
+        - type
+        - source
+        - time
+        - data
+      properties:
+        specversion:
+          type: string
+          const: '1.0'
+          description: Versão da especificação CloudEvents
+        id:
+          type: string
+          format: uuid
+          description: Identificador único do evento (UUID v4) gerado pelo produtor
+        type:
+          type: string
+          description: >
+            Tipo do evento no formato
+            `com.fake-ecommerce.<domain>.<action>.v<version>`.
+
+            A ação está no passado (eventos são fatos imutáveis).
+          pattern: '^com\.fake-ecommerce\.[a-z_]+\.[a-z_]+\.v\d+$'
+          example: com.fake-ecommerce.order.created.v1
+        source:
+          type: string
+          format: uri-reference
+          description: URI-reference identificando a origem do evento
+          example: /ecommerce-service/orders
+        subject:
+          type: string
+          description: Identificador da entidade de negócio à qual o evento se refere
+          example: order-1001
+        time:
+          type: string
+          format: date-time
+          description: Timestamp ISO 8601 do momento em que o evento ocorreu (UTC)
+        datacontenttype:
+          type: string
+          description: Media type do payload `data`
+          example: application/json
+    OrderCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.order.created.v1
+            data:
+              $ref: '#/components/schemas/OrderCreatedData'
+    OrderCreatedData:
+      type: object
+      description: Payload do evento order.created
+      required:
+        - orderId
+        - customerName
+        - totalAmount
+        - items
+        - payment
+      properties:
+        orderId:
+          type: integer
+          description: ID único do pedido no sistema
+          example: 1001
+        customerName:
+          type: string
+          minLength: 1
+          example: John Smith
+        totalAmount:
+          type: number
+          format: double
+          minimum: 0.01
+          example: 259.98
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        payment:
+          type: object
+          required:
+            - card_number
+            - payment_type
+          properties:
+            card_number:
+              type: string
+              minLength: 13
+              maxLength: 19
+              example: '4111111111111111'
+            payment_type:
+              type: string
+              enum:
+                - credit
+                - debit
+              example: credit
+    OrderItem:
+      type: object
+      required:
+        - product_name
+        - quantity
+        - price
+      properties:
+        product_name:
+          type: string
+          minLength: 1
+          example: Dell Notebook
+        quantity:
+          type: integer
+          minimum: 1
+          example: 1
+        price:
+          type: number
+          format: double
+          minimum: 0.01
+          example: 199.99
+    OrderCompletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.order.completed.v1
+            data:
+              $ref: '#/components/schemas/OrderCompletedData'
+    OrderCompletedData:
+      type: object
+      required:
+        - orderId
+        - status
+      properties:
+        orderId:
+          type: integer
+          example: 1001
+        status:
+          type: string
+          const: paid
+          example: paid
+    OrderFailedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.order.failed.v1
+            data:
+              $ref: '#/components/schemas/OrderFailedData'
+    OrderFailedData:
+      type: object
+      required:
+        - orderId
+        - status
+        - reason
+      properties:
+        orderId:
+          type: integer
+          example: 1002
+        status:
+          type: string
+          const: failed
+        reason:
+          type: string
+          enum:
+            - payment_declined
+            - insufficient_stock
+            - invalid_data
+            - processing_error
+          example: payment_declined
+    OrderCancellationRequestedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.order.cancellation.requested.v1
+            data:
+              $ref: '#/components/schemas/OrderCancellationRequestedData'
+    OrderCancellationRequestedData:
+      type: object
+      required:
+        - orderId
+      properties:
+        orderId:
+          type: integer
+          description: ID do pedido cujo cancelamento foi solicitado
+          example: 1001
+    OrderCancelledEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.order.cancelled.v1
+            data:
+              $ref: '#/components/schemas/OrderCancelledData'
+    OrderCancelledData:
+      type: object
+      required:
+        - orderId
+        - status
+      properties:
+        orderId:
+          type: integer
+          example: 1001
+        status:
+          type: string
+          const: cancelled
+          example: cancelled
+    PaymentRequestedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.payment.requested.v1
+            data:
+              $ref: '#/components/schemas/PaymentRequestedData'
+    PaymentRequestedData:
+      type: object
+      required:
+        - paymentRequestId
+        - externalId
+        - amount
+        - paymentMethod
+        - cardNumber
+      properties:
+        paymentRequestId:
+          type: integer
+          description: ID interno da requisição de pagamento no Payment Service
+          example: 1
+        externalId:
+          type: string
+          description: ID externo do pedido (orderId do Order Service)
+          example: '1001'
+        amount:
+          type: number
+          format: double
+          minimum: 0.01
+          example: 259.98
+        paymentMethod:
+          type: string
+          enum:
+            - credit
+            - debit
+          example: credit
+        cardNumber:
+          type: string
+          minLength: 13
+          maxLength: 19
+          example: '4111111111111111'
+    PaymentProcessedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.payment.processed.v1
+            data:
+              $ref: '#/components/schemas/PaymentProcessedData'
+    PaymentProcessedData:
+      type: object
+      required:
+        - paymentRequestId
+        - externalId
+        - amount
+        - status
+        - gateway
+        - gatewayResponse
+      properties:
+        paymentRequestId:
+          type: integer
+          example: 1
+        externalId:
+          type: integer
+          example: 1001
+        amount:
+          type: number
+          format: double
+          example: 259.98
+        status:
+          type: string
+          enum:
+            - approved
+            - declined
+          example: approved
+        gateway:
+          type: string
+          enum:
+            - credit
+            - debit
+          example: credit
+        gatewayResponse:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: '00'
+            message:
+              type: string
+              example: Approved by Credit Gateway
+    PaymentApprovedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.payment.approved.v1
+            data:
+              $ref: '#/components/schemas/PaymentApprovedData'
+    PaymentApprovedData:
+      type: object
+      required:
+        - externalId
+        - paymentRequestId
+        - status
+        - processedAt
+      properties:
+        externalId:
+          type: integer
+          description: ID externo do pedido (orderId do Order Service)
+          example: 1001
+        paymentRequestId:
+          type: integer
+          example: 1
+        status:
+          type: string
+          const: approved
+        processedAt:
+          type: string
+          format: date-time
+          example: 2026-01-15T10:30:15.500Z
+    PaymentDeclinedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.payment.declined.v1
+            data:
+              $ref: '#/components/schemas/PaymentDeclinedData'
+    PaymentDeclinedData:
+      type: object
+      required:
+        - externalId
+        - paymentRequestId
+        - status
+        - reason
+        - processedAt
+      properties:
+        externalId:
+          type: integer
+          example: 1002
+        paymentRequestId:
+          type: integer
+          example: 2
+        status:
+          type: string
+          const: declined
+        reason:
+          type: string
+          example: insufficient_funds
+        processedAt:
+          type: string
+          format: date-time
+          example: 2026-01-15T10:30:20.500Z
+    PaymentRefundedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.payment.refunded.v1
+            data:
+              $ref: '#/components/schemas/PaymentRefundedData'
+    PaymentRefundedData:
+      type: object
+      required:
+        - orderId
+        - paymentRequestId
+        - refundedAt
+      properties:
+        orderId:
+          type: integer
+          description: ID externo do pedido (orderId do Order Service)
+          example: 1001
+        paymentRequestId:
+          type: integer
+          description: ID interno da requisição de pagamento no Payment Service
+          example: 1
+        refundedAt:
+          type: string
+          format: date-time
+          example: 2026-01-15T10:30:18.500Z
+    InventoryReservedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.inventory.reserved.v1
+            data:
+              $ref: '#/components/schemas/InventoryReservedData'
+    InventoryReservedData:
+      type: object
+      description: >
+        Payload do evento inventory.reserved. A reserva é atômica: ou todos os
+        itens do pedido são reservados, ou nenhum é (caso em que o Inventory
+        Service publica `inventory.out_of_stock.v1`).
+      required:
+        - orderId
+        - reserved_items
+      properties:
+        orderId:
+          type: integer
+          description: ID do pedido cujos itens foram reservados
+          example: 1001
+        reserved_items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ReservedItem'
+    ReservedItem:
+      type: object
+      required:
+        - productName
+        - quantityReserved
+        - remainingStock
+      properties:
+        productName:
+          type: string
+          minLength: 1
+          example: Dell Notebook
+        quantityReserved:
+          type: integer
+          minimum: 1
+          example: 1
+        remainingStock:
+          type: integer
+          minimum: 0
+          example: 49
+    InventoryOutOfStockEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.inventory.out_of_stock.v1
+            data:
+              $ref: '#/components/schemas/InventoryOutOfStockData'
+    InventoryOutOfStockData:
+      type: object
+      description: >
+        Payload do evento inventory.out_of_stock. Emitido quando ao menos um
+        item do pedido não pode ser reservado (produto inexistente ou
+        quantidade insuficiente). Nenhum item é decrementado.
+      required:
+        - orderId
+        - unavailable_items
+      properties:
+        orderId:
+          type: integer
+          example: 1002
+        unavailable_items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/UnavailableItem'
+    UnavailableItem:
+      type: object
+      required:
+        - productName
+        - available
+        - requested
+        - reason
+      properties:
+        productName:
+          type: string
+          minLength: 1
+          example: Dell Notebook
+        available:
+          type: integer
+          minimum: 0
+          description: Quantidade atualmente disponível em estoque (0 se produto não existe)
+          example: 2
+        requested:
+          type: integer
+          minimum: 1
+          description: Quantidade que o pedido solicitou
+          example: 5
+        reason:
+          type: string
+          enum:
+            - product_not_found
+            - insufficient_stock
+          example: insufficient_stock
+    InventoryReleasedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          required:
+            - data
+          properties:
+            type:
+              const: com.fake-ecommerce.inventory.released.v1
+            data:
+              $ref: '#/components/schemas/InventoryReleasedData'
+    InventoryReleasedData:
+      type: object
+      description: >
+        Payload do evento inventory.released. A devolução é por pedido: todas as
+        reservas ativas do `orderId` são restauradas atomicamente no estoque.
+      required:
+        - orderId
+      properties:
+        orderId:
+          type: integer
+          description: ID do pedido cujas reservas de estoque foram devolvidas
+          example: 1002
+  securitySchemes:
+    rabbitmqAuth:
+      type: userPassword
+      description: >
+        Autenticação básica do RabbitMQ usando usuário e senha.
+
+
+        **Credenciais padrão para desenvolvimento:**
+
+        - Usuário: admin
+
+        - Senha: admin123
+
+
+        **IMPORTANTE**: Use credenciais seguras em produção e considere
+
+        integração com sistemas de gerenciamento de secrets (Vault, AWS Secrets
+        Manager, etc).

@@ -1,0 +1,48 @@
+### Criar Pedido
+POST http://localhost:3000/api/orders
+Content-Type: application/json
+
+{
+  "customer_name": "João Silva",
+  "items": [
+    {
+      "product_name": "Notebook",
+      "quantity": 1,
+      "price": 2500.00
+    },
+    {
+      "product_name": "Mouse",
+      "quantity": 2,
+      "price": 50.00
+    }
+  ],
+  "payment": {
+    "card_number": "4532015112830366",
+    "payment_type": "debit"
+  }
+}
+
+### Consultar Status do Pedido (Saga)
+GET http://localhost:3000/api/orders/1
+
+### Cancelar Pedido (compensa pagamento + estoque)
+POST http://localhost:3000/api/orders/1/cancel
+
+### Criar Pedido com produto inexistente (testa compensação por falta de estoque)
+POST http://localhost:3000/api/orders
+Content-Type: application/json
+
+{
+  "customer_name": "Maria Teste",
+  "items": [
+    {
+      "product_name": "ProdutoInexistente",
+      "quantity": 1,
+      "price": 100.00
+    }
+  ],
+  "payment": {
+    "card_number": "4532015112830366",
+    "payment_type": "credit"
+  }
+}

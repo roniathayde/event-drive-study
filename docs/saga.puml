@@ -1,0 +1,124 @@
+@startuml Saga Coreografada - Maquina de Estados
+title Anthology Saga (Coreografada) - Ciclo de Vida do Pedido (read model do ecommerce)
+
+hide empty description
+skinparam linetype polyline
+skinparam shadowing false
+skinparam state {
+  FontName Helvetica
+  FontSize 13
+  BorderColor #34495E
+  ArrowColor #34495E
+  ArrowFontColor #2C3E50
+  ArrowFontSize 11
+}
+
+state "RUNNING" as RUNNING #E8F0FE {
+  RUNNING : Projecao aguardando os dois lados (payment e estoque)
+  RUNNING : payment_state  : PENDING -> APPROVED | DECLINED
+  RUNNING : inventory_state : PENDING -> RESERVED | OUT_OF_STOCK
+}
+
+state "COMPENSATING" as COMPENSATING #FFF4D6 {
+  COMPENSATING : Servicos compensando por conta propria
+  COMPENSATING : observa payment.refunded / inventory.released
+}
+
+state "COMPLETED" as COMPLETED #D7F5DD {
+  COMPLETED : Pedido confirmado
+  COMPLETED : ecommerce publica order.completed (fato)
+}
+
+state "FAILED" as FAILED #FADBD8 {
+  FAILED : Pedido nao concluido
+  FAILED : ecommerce publica order.failed (fato)
+}
+
+state "CANCELLED" as CANCELLED #E8DAEF {
+  CANCELLED : Cancelado pelo cliente
+  CANCELLED : ecommerce publica order.cancelled (fato)
+}
+
+[*] --> RUNNING : order.created
+
+RUNNING --> COMPLETED : APPROVED + RESERVED
+RUNNING --> COMPENSATING : APPROVED + OUT_OF_STOCK\n[payment se autoestorna]
+RUNNING --> COMPENSATING : DECLINED + RESERVED\n[inventory se autodevolve]
+RUNNING --> FAILED : DECLINED + OUT_OF_STOCK\n[nada a compensar]
+
+RUNNING --> COMPENSATING : POST /cancel\n[ecommerce publica order.cancellation.requested]
+
+COMPENSATING --> FAILED : compensacao observada\n[origem: falha]
+COMPENSATING --> CANCELLED : compensacao observada\n[origem: cancelamento]
+RUNNING --> CANCELLED : POST /cancel com os dois lados PENDING\n[nada a compensar]
+
+COMPLETED --> [*]
+FAILED --> [*]
+CANCELLED --> [*]
+
+@enduml
+
+
+@startuml Saga Coreografada - Fluxo de Eventos
+title Saga Coreografada - cada servico se conserta sozinho
+
+actor Cliente
+participant "ecommerce" as EC
+queue "RabbitMQ" as RMQ
+participant "payment" as PAY
+participant "inventory" as INV
+
+Cliente -> EC : cria pedido
+EC -> EC : RUNNING
+EC -> RMQ : order.created
+RMQ -> PAY : order.created
+RMQ -> INV : order.created
+
+par os dois lados ao mesmo tempo
+  INV -> RMQ : inventory.reserved | out_of_stock
+else
+  PAY -> RMQ : payment.approved | declined
+end
+RMQ -> EC : (monta o placar)
+
+alt tudo certo
+  EC -> EC : COMPLETED
+
+else sem estoque (ja pago)
+  EC -> EC : COMPENSATING
+  RMQ -> PAY : inventory.out_of_stock
+  PAY -> RMQ : payment.refunded
+  EC -> EC : FAILED
+
+else pagamento recusado (ja reservado)
+  EC -> EC : COMPENSATING
+  RMQ -> INV : payment.declined
+  INV -> RMQ : inventory.released
+  EC -> EC : FAILED
+
+else os dois falharam
+  EC -> EC : FAILED
+end
+
+@enduml
+
+
+@startuml Saga - Cancelamento
+title Cancelamento (so enquanto RUNNING)
+
+actor Cliente
+participant "ecommerce" as EC
+queue "RabbitMQ" as RMQ
+participant "payment" as PAY
+participant "inventory" as INV
+
+Cliente -> EC : cancela pedido
+EC -> EC : COMPENSATING
+EC -> RMQ : order.cancellation.requested
+RMQ -> PAY : cancellation.requested
+RMQ -> INV : cancellation.requested
+PAY -> RMQ : payment.refunded
+INV -> RMQ : inventory.released
+EC -> EC : CANCELLED
+
+@enduml

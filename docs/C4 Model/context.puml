@@ -1,0 +1,19 @@
+@startuml E-commerce System Context
+!include <C4/C4_Context>
+
+LAYOUT_WITH_LEGEND()
+
+title System Context Diagram - E-commerce Platform (EDA / Saga Coreografada)
+
+Person(customer, "Cliente", "Usuário que realiza compras online")
+
+System(ecommerce, "E-commerce Platform", "Plataforma de e-commerce orientada a eventos (EDA). Gerencia pedidos, pagamentos e estoque de forma distribuída, coordenada por uma saga coreografada (RabbitMQ + CloudEvents)")
+
+System_Ext(credit_gateway, "Credit Gateway", "Gateway externo de processamento de pagamentos com cartão de crédito (simulado)")
+System_Ext(debit_gateway, "Debit Gateway", "Gateway externo de processamento de pagamentos com cartão de débito (simulado)")
+
+Rel(customer, ecommerce, "Cria pedidos, consulta status, solicita cancelamento", "HTTP/REST")
+Rel(ecommerce, credit_gateway, "Requisita processamento de pagamentos de crédito", "Assíncrono")
+Rel(ecommerce, debit_gateway, "Requisita processamento de pagamentos de débito", "Assíncrono")
+
+@enduml

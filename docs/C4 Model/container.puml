@@ -1,0 +1,59 @@
+@startuml E-commerce Container Diagram (Overview)
+!include <C4/C4_Container>
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LANDSCAPE()
+
+title Container Diagram - Visao Geral (EDA / Saga Coreografada)
+
+Person(customer, "Cliente", "Usuário que realiza compras online")
+
+ContainerQueue(rabbitmq, "Event Broker", "RabbitMQ", "Barramento de eventos")
+
+System_Boundary(ecommerce, "E-commerce Service (Order)") {
+    Container(spa, "Web App", "HTML/CSS/JS, servido pelo Express", "Interface web estilo loja: lista, cria e cancela pedidos e acompanha o status da saga")
+    Container(api, "API Application", "Node.js, Express, TypeScript", "Recebe HTTP, cria pedidos gravando estado + evento na outbox na mesma transação e projeta o status da saga (read model)")
+    Container(ecommerce_relay, "Outbox Relay", "Node.js, TypeScript", "Worker em background: lê a outbox pendente (SKIP LOCKED) e publica os eventos no broker")
+    ContainerDb(database, "E-commerce DB", "PostgreSQL 18", "orders, order_saga, inbox, outbox")
+}
+
+System_Boundary(payment_context, "Payment Bounded Context") {
+    Container(payment_system, "Payment System", "Node.js, TypeScript", "Reage a eventos, processa pagamentos e se autoestorna em caso de falha")
+    ContainerDb(payment_db, "Payment DB", "SQLite", "payment_requests, payment_transactions, void_intents")
+}
+
+System_Boundary(inventory_context, "Inventory Bounded Context") {
+    Container(inventory_system, "Inventory System", "Node.js, TypeScript", "Reserva estoque e devolve a reserva em caso de falha ou cancelamento")
+    ContainerDb(inventory_db, "Inventory DB", "SQLite", "inventory, reservations, inbox")
+}
+
+System_Boundary(audit_context, "Audit Bounded Context") {
+    Container(audit_system, "Audit System", "Node.js, TypeScript", "Consome todos os eventos e armazena registros imutáveis")
+    ContainerDb(audit_db, "Audit DB", "SQLite", "Logs de auditoria imutáveis")
+}
+
+System_Ext(creditGateway, "Credit Gateway (Fake)", "Gateway de cartão de crédito (simulado)")
+System_Ext(debitGateway, "Debit Gateway (Fake)", "Gateway de cartão de débito (simulado)")
+
+Rel(customer, spa, "Usa no navegador", "HTTPS")
+Rel(spa, api, "Cria pedidos, consulta status, cancela", "JSON/HTTP")
+Rel(api, database, "Grava estado + outbox (1 transação); lê read model", "SQL")
+
+Rel(ecommerce_relay, database, "Lê outbox pendente e marca como publicado", "SQL")
+Rel(ecommerce_relay, rabbitmq, "Publica os eventos de domínio", "AMQP")
+Rel(rabbitmq, api, "Entrega eventos de payment/inventory aos consumidores", "AMQP/Consumer")
+Rel(payment_system, rabbitmq, "Publica e consome eventos", "AMQP")
+Rel(payment_system, payment_db, "Lê e escreve", "SQL")
+Rel(payment_system, creditGateway, "Requisita processamento", "AMQP")
+Rel(payment_system, debitGateway, "Requisita processamento", "AMQP")
+Rel(inventory_system, rabbitmq, "Publica e consome eventos", "AMQP")
+Rel(inventory_system, inventory_db, "Lê e escreve", "SQL")
+Rel(rabbitmq, audit_system, "Entrega todos os eventos", "AMQP/Consumer")
+Rel(audit_system, audit_db, "Persiste logs", "SQL")
+
+Lay_D(payment_context, creditGateway)
+Lay_D(payment_context, debitGateway)
+Lay_R(payment_context, inventory_context)
+Lay_R(inventory_context, audit_context)
+
+@enduml

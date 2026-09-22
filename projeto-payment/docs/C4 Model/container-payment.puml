@@ -1,0 +1,52 @@
+@startuml Payment Container Diagram
+!include <C4/C4_Container>
+
+LAYOUT_WITH_LEGEND()
+
+' ---- Fundo igual ao Excalidraw dark mode ----
+skinparam backgroundColor #121212
+skinparam TitleFontColor #E0E0E0
+skinparam ArrowFontColor #C9C9C9
+skinparam LegendBackgroundColor #1E1E1E
+skinparam LegendFontColor #E0E0E0
+skinparam LegendBorderColor #555555
+UpdateBoundaryStyle($bgColor="#121212", $fontColor="#E0E0E0", $borderColor="#6C6C6C")
+
+title Container Diagram - Payment Bounded Context (detalhado)
+
+System_Ext(ecommerce, "E-commerce Service (Order)", "Publica order.created e order.cancellation.requested. Consome payment.* para projetar o status da saga (read model)")
+
+ContainerQueue(broker_saga, "Event Broker - Saga", "RabbitMQ", "Eventos de dominio da saga (order.*, payment.*, inventory.*)")
+ContainerQueue(broker_gateway, "Event Broker - Gateways", "RabbitMQ", "Requisicao/resposta dos gateways (payment.requested, payment.processed)")
+
+System_Boundary(payment_context, "Payment Bounded Context") {
+
+    Container(payment_system, "Payment Service", "Node.js, TypeScript", "Servico orientado a eventos. Reage a order.created, requisita o gateway, atualiza o status e se autoestorna ao observar falha de estoque ou cancelamento (intencao de estorno)")
+
+    Container(credit_gateway, "Credit Gateway (Fake)", "Node.js, consumer in-process", "Simula o gateway de cartao de credito. Consome payment.requested (routing key 'credit') e responde payment.processed")
+
+    Container(debit_gateway, "Debit Gateway (Fake)", "Node.js, consumer in-process", "Simula o gateway de cartao de debito. Consome payment.requested (routing key 'debit') e responde payment.processed")
+
+    ContainerDb(payment_db, "Payment DB", "SQLite / better-sqlite3", "payment_requests, payment_transactions, void_intents (intencao de estorno pendente)")
+}
+
+' ---- E-commerce <-> broker da saga ----
+Rel(ecommerce, broker_saga, "Publica order.created, order.cancellation.requested", "AMQP")
+Rel(broker_saga, ecommerce, "Entrega payment.approved / declined / refunded", "AMQP/Consumer")
+
+' ---- Payment <-> broker da saga ----
+Rel(broker_saga, payment_system, "Entrega order.created, inventory.out_of_stock, order.cancellation.requested", "AMQP/Consumer")
+Rel(payment_system, broker_saga, "Publica payment.approved, payment.declined, payment.refunded", "AMQP")
+
+' ---- Payment <-> broker dos gateways ----
+Rel(payment_system, broker_gateway, "Publica payment.requested (topic: credit | debit)", "AMQP")
+Rel(broker_gateway, payment_system, "Entrega payment.processed", "AMQP/Consumer")
+Rel(broker_gateway, credit_gateway, "payment.requested [credit]", "AMQP/Consumer")
+Rel(broker_gateway, debit_gateway, "payment.requested [debit]", "AMQP/Consumer")
+Rel(credit_gateway, broker_gateway, "payment.processed (approved | declined)", "AMQP")
+Rel(debit_gateway, broker_gateway, "payment.processed (approved | declined)", "AMQP")
+
+' ---- Persistencia ----
+Rel(payment_system, payment_db, "Persiste pagamentos, transacoes e intencoes de estorno", "SQL")
+
+@enduml

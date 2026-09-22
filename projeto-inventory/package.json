@@ -1,0 +1,23 @@
+{
+  "name": "projeto-inventory",
+  "version": "1.0.0",
+  "description": "Inventory Service - bounded context próprio",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.9",
+    "better-sqlite3": "^12.4.1",
+    "cloudevents": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.7",
+    "@types/node": "^22.5.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

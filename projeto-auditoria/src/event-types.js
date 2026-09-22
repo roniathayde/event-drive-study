@@ -1,0 +1,15 @@
+export const EVENT_TYPES = [
+  'com.fake-ecommerce.order.created.v1',
+  'com.fake-ecommerce.order.completed.v1',
+  'com.fake-ecommerce.order.failed.v1',
+  'com.fake-ecommerce.order.cancelled.v1',
+  'com.fake-ecommerce.order.cancellation.requested.v1',
+  'com.fake-ecommerce.payment.requested.v1',
+  'com.fake-ecommerce.payment.processed.v1',
+  'com.fake-ecommerce.payment.approved.v1',
+  'com.fake-ecommerce.payment.declined.v1',
+  'com.fake-ecommerce.payment.refunded.v1',
+  'com.fake-ecommerce.inventory.reserved.v1',
+  'com.fake-ecommerce.inventory.out_of_stock.v1',
+  'com.fake-ecommerce.inventory.released.v1',
+];

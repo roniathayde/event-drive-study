@@ -1,0 +1,41 @@
+@startuml E-commerce Container Diagram
+!include <C4/C4_Container>
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LANDSCAPE()
+
+title Container Diagram - E-commerce Platform (Fase 1)
+
+Person(customer, "Cliente", "Usuário que realiza compras online")
+
+ContainerQueue(rabbitmq, "Message Broker", "RabbitMQ", "Gerencia filas de eventos para auditoria e integração assíncrona entre os bounded contexts")
+
+System_Boundary(ecommerce, "E-commerce System") {
+    Container(api, "API Application", "Node.js, Express, TypeScript", "Processa requisições HTTP, gerencia pedidos e estoque")
+    ContainerDb(database, "Database", "SQLite", "Armazena pedidos e inventário")
+}
+
+System_Boundary(payment_context, "Payment Bounded Context") {
+    Container(payment_system, "Payment System", "Node.js, TypeScript", "Serviço de background que processa pagamentos pendentes periodicamente e publica eventos")
+    ContainerDb(payment_db, "Payment Database", "SQLite", "Armazena requisições de pagamento (payment_requests) e transações (payment_transactions)")
+}
+
+System_Ext(creditGateway, "Credit Gateway (Fake)", "Simulação de gateway de pagamento com cartão de crédito")
+System_Ext(debitGateway, "Debit Gateway (Fake)", "Simulação de gateway de pagamento com cartão de débito")
+
+System_Boundary(audit_context, "Audit Bounded Context") {
+    Container(audit_system, "Audit System", "Node.js, TypeScript", "Consome eventos de auditoria e armazena registros completos de todas as ações do sistema")
+    ContainerDb(audit_db, "Audit Database", "SQLite", "Armazena logs de auditoria imutáveis de todos os eventos")
+}
+
+Rel(customer, api, "Cria pedidos, consulta status", "HTTP/REST")
+Rel(api, database, "Lê e escreve dados", "SQL/better-sqlite3")
+Rel(api, rabbitmq, "Publica eventos", "AMQP")
+Rel(payment_system, payment_db, "Busca pagamentos pendentes e registra transações", "SQL/better-sqlite3")
+Rel(payment_system, rabbitmq, "Publica eventos payment.processed", "AMQP")
+Rel(payment_system, creditGateway, "Processa pagamentos crédito", "HTTPS")
+Rel(payment_system, debitGateway, "Processa pagamentos débito", "HTTPS")
+Rel(rabbitmq, audit_system, "Consome eventos", "AMQP/Consumer")
+Rel(audit_system, audit_db, "Persiste logs de auditoria", "SQL")
+
+@enduml
